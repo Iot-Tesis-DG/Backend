@@ -1,0 +1,79 @@
+from collections.abc import AsyncGenerator, Callable
+from typing import Annotated
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.domain.entities.usuario import Usuario
+from src.domain.exceptions import CredencialesInvalidasError, PermisoDenegadoError, RecursoNoEncontradoError
+from src.domain.value_objects.rol import Rol
+from src.infrastructure.config import Settings, get_settings
+from src.infrastructure.database.repositories.usuario_repository import SQLAlchemyUsuarioRepository
+from src.infrastructure.database.session import get_session
+from src.infrastructure.security.jwt_handler import JWTHandler
+from src.infrastructure.security.rbac import verificar_permiso
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+SettingsDep = Annotated[Settings, Depends(get_settings)]
+
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async for session in get_session():
+        yield session
+
+
+DbSessionDep = Annotated[AsyncSession, Depends(get_db)]
+
+
+def get_jwt_handler(settings: SettingsDep) -> JWTHandler:
+    return JWTHandler(settings)
+
+
+JWTHandlerDep = Annotated[JWTHandler, Depends(get_jwt_handler)]
+
+
+async def get_current_user(
+    token: Annotated[str, Depends(oauth2_scheme)],
+    session: DbSessionDep,
+    jwt_handler: JWTHandlerDep,
+) -> Usuario:
+    try:
+        payload = jwt_handler.decodificar_token(token)
+    except CredencialesInvalidasError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    repositorio = SQLAlchemyUsuarioRepository(session)
+    usuario = await repositorio.obtener_por_id(payload.sub)
+    if usuario is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
+    return usuario
+
+
+CurrentUserDep = Annotated[Usuario, Depends(get_current_user)]
+
+
+def require_roles(*roles_permitidos: Rol) -> Callable[[Usuario], Usuario]:
+    def dependencia(usuario: CurrentUserDep) -> Usuario:
+        try:
+            verificar_permiso(usuario.rol, roles_permitidos)
+        except PermisoDenegadoError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        return usuario
+
+    return dependencia
+
+
+def traducir_excepcion_dominio(exc: Exception) -> HTTPException:
+    if isinstance(exc, RecursoNoEncontradoError):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if isinstance(exc, CredencialesInvalidasError):
+        return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
+    if isinstance(exc, PermisoDenegadoError):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
