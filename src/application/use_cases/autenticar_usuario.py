@@ -17,6 +17,8 @@ class ResultadoAutenticacion:
     access_token: str
     usuario_id: UUID
     token_type: str = "bearer"
+    # HU-44: el frontend debe bloquear la navegación hasta que se acepte.
+    require_privacy_consent: bool = False
 
 
 class AutenticarUsuarioUseCase:
@@ -33,6 +35,13 @@ class AutenticarUsuarioUseCase:
             raise CredencialesInvalidasError("Email o contraseña incorrectos")
         if not verify_password(password, usuario.password_hash):
             raise CredencialesInvalidasError("Email o contraseña incorrectos")
+        # HU-45: un usuario desactivado no puede volver a iniciar sesión.
+        if not usuario.is_active:
+            raise CredencialesInvalidasError("Email o contraseña incorrectos")
 
         token = self._jwt_handler.crear_token(usuario.id, usuario.email, usuario.rol)
-        return ResultadoAutenticacion(access_token=token, usuario_id=usuario.id)
+        return ResultadoAutenticacion(
+            access_token=token,
+            usuario_id=usuario.id,
+            require_privacy_consent=usuario.requiere_aceptar_privacidad,
+        )

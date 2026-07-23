@@ -1,4 +1,6 @@
-from sqlalchemy import select, text
+from uuid import UUID
+
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.entities.registro_trazabilidad import RegistroTrazabilidad
@@ -82,3 +84,21 @@ class SQLAlchemyTrazabilidadRepository(ITrazabilidadRepository):
         stmt = stmt.order_by(TraceabilityRecordModel.created_at.desc()).limit(limite).offset(offset)
         result = await self._session.execute(stmt)
         return [_to_entity(m) for m in result.scalars().all()]
+
+    async def marcar_corrupto(self, registro_id: UUID) -> None:
+        await self._session.execute(
+            update(TraceabilityRecordModel)
+            .where(TraceabilityRecordModel.id == registro_id)
+            .values(is_corrupted=True)
+        )
+        await self._session.flush()
+
+    async def marcar_posteriores_como_afectados(self, ids: list[UUID]) -> None:
+        if not ids:
+            return
+        await self._session.execute(
+            update(TraceabilityRecordModel)
+            .where(TraceabilityRecordModel.id.in_(ids))
+            .values(is_after_corruption=True)
+        )
+        await self._session.flush()

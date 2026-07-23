@@ -33,6 +33,8 @@ from src.interface.api.api_protection import instalar_proteccion_api
 from src.interface.api.alertas_router import router as alertas_router
 from src.interface.api.auditoria_router import router as auditoria_router
 from src.interface.api.auth_router import router as auth_router
+from src.interface.api.dispositivos_router import router as dispositivos_router
+from src.interface.api.firmware_router import router as firmware_router
 from src.interface.api.ia_router import router as ia_router
 from src.interface.api.lecturas_router import router as lecturas_router
 from src.interface.api.mappers import lectura_to_response
@@ -218,6 +220,8 @@ def create_app() -> FastAPI:
     app.include_router(auditoria_router)
     app.include_router(ia_router)
     app.include_router(sse_router)
+    app.include_router(dispositivos_router)
+    app.include_router(firmware_router)
 
     @app.get("/health", tags=["health"])
     async def health() -> dict:

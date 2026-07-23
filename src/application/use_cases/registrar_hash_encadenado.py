@@ -72,11 +72,15 @@ class RegistrarHashEncadenadoUseCase:
         device_id: str | None = None,
         usuario_id: UUID | None = None,
         timestamp: datetime | None = None,
+        previous_hash_forzado: str | None = None,
     ) -> RegistroTrazabilidad:
+        """previous_hash_forzado (HU-47): permite anclar un evento de emergencia
+        al último bloque ÍNTEGRO conocido en vez de al último hash almacenado
+        (que puede ya ser descendiente de un registro corrupto)."""
         timestamp = timestamp or datetime.now(tz=timezone.utc)
 
         async def registrar() -> RegistroTrazabilidad:
-            previous_hash = await self._trazabilidad_repository.obtener_ultimo_hash()
+            previous_hash = previous_hash_forzado or await self._trazabilidad_repository.obtener_ultimo_hash()
             hash_encadenado = HashEncadenado.encadenar(
                 previous_hash, timestamp_canonico(timestamp), payload
             )

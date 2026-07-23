@@ -17,6 +17,14 @@ def _to_entity(model: UserModel) -> Usuario:
         email=model.email,
         password_hash=model.password_hash,
         rol=Rol(model.rol.nombre),
+        privacy_accepted=model.privacy_accepted,
+        privacy_accepted_at=model.privacy_accepted_at,
+        privacy_version_accepted=model.privacy_version_accepted,
+        is_active=model.is_active,
+        motivo_desactivacion=model.motivo_desactivacion,
+        desactivado_en=model.desactivado_en,
+        desactivado_por=model.desactivado_por,
+        anonymized_for_gdpr=model.anonymized_for_gdpr,
     )
 
 
@@ -73,6 +81,14 @@ class SQLAlchemyUsuarioRepository(IUsuarioRepository):
         model.email = usuario.email
         model.password_hash = usuario.password_hash
         model.rol_id = rol_model.id
+        model.privacy_accepted = usuario.privacy_accepted
+        model.privacy_accepted_at = usuario.privacy_accepted_at
+        model.privacy_version_accepted = usuario.privacy_version_accepted
+        model.is_active = usuario.is_active
+        model.motivo_desactivacion = usuario.motivo_desactivacion
+        model.desactivado_en = usuario.desactivado_en
+        model.desactivado_por = usuario.desactivado_por
+        model.anonymized_for_gdpr = usuario.anonymized_for_gdpr
         await self._session.flush()
         await self._session.refresh(model, attribute_names=["rol"])
         return _to_entity(model)

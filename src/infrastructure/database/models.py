@@ -37,6 +37,14 @@ class DeviceModel(Base):
     estado_conectividad: Mapped[str] = mapped_column(String(20), default="offline")
     created_at: Mapped[datetime] = _created_at_column()
 
+    # HU-43: ciclo de vida (baja/reemplazo) sin borrar el histórico.
+    activo: Mapped[bool] = mapped_column(Boolean, default=True)
+    firmware_version: Mapped[str] = mapped_column(String(20), default="1.0.0")
+    motivo_baja: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    descripcion_baja: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dado_de_baja_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reemplaza_a_device_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     lecturas: Mapped[list["ThermalReadingModel"]] = relationship(back_populates="device")
 
 
@@ -58,6 +66,20 @@ class UserModel(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     rol_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("roles.id"), nullable=False)
     created_at: Mapped[datetime] = _created_at_column()
+
+    # HU-44: consentimiento explícito de la Ley N.° 29733.
+    privacy_accepted: Mapped[bool] = mapped_column(Boolean, default=False)
+    privacy_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    privacy_version_accepted: Mapped[str | None] = mapped_column(String(10), nullable=True)
+
+    # HU-45: desactivación/anonimización (derecho al olvido) sin borrar audit_logs.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    motivo_desactivacion: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    desactivado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    desactivado_por: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    anonymized_for_gdpr: Mapped[bool] = mapped_column(Boolean, default=False)
 
     rol: Mapped[RoleModel] = relationship(back_populates="usuarios")
 
@@ -158,6 +180,9 @@ class TraceabilityRecordModel(Base):
     previous_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     hash_actual: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     created_at: Mapped[datetime] = _created_at_column()
+    # HU-47: aislamiento de un registro corrupto y marca de "posterior al punto de ruptura".
+    is_corrupted: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_after_corruption: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class AuditLogModel(Base):
@@ -182,3 +207,56 @@ class ReportExportModel(Base):
     fecha_hasta: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     archivo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = _created_at_column()
+
+
+class FirmwareReleaseModel(Base):
+    """HU-46: metadata de una versión de firmware preparada para despliegue OTA.
+
+    Simulado a nivel de aplicación: este repositorio no contiene firmware real
+    de ESP32 ni un canal MQTT de producción; no se cifra ni transmite ningún
+    binario. Ver 08_hu43_47_ota_y_cierre.md para el alcance exacto."""
+
+    __tablename__ = "firmware_releases"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    version: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    hash_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    descripcion: Mapped[str] = mapped_column(Text, nullable=False)
+    fecha_compilacion: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = _created_at_column()
+
+
+class FirmwareDeploymentModel(Base):
+    __tablename__ = "firmware_deployments"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    device_id: Mapped[str] = mapped_column(String(50), ForeignKey("devices.id"), nullable=False)
+    version_objetivo: Mapped[str] = mapped_column(String(20), nullable=False)
+    estado: Mapped[str] = mapped_column(String(20), nullable=False)
+    programado_para: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resultado: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = _created_at_column()
+
+
+class ForensicSnapshotModel(Base):
+    """HU-47: snapshot forense persistido ante corrupción detectada en la cadena hash."""
+
+    __tablename__ = "forensic_snapshots"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    registro_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("traceability_records.id"), nullable=True
+    )
+    detalle: Mapped[dict] = mapped_column(JSONVariant, nullable=False)
+    created_at: Mapped[datetime] = _created_at_column()
+
+
+class SystemStateModel(Base):
+    """HU-47: fila única (id=1) con el flag global cadena_comprometida."""
+
+    __tablename__ = "system_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cadena_comprometida: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, server_default=func.now())

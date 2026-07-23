@@ -5,13 +5,21 @@ from fastapi.security import OAuth2PasswordRequestForm
 
 from src.application.use_cases.auditar_accion_critica import AuditarAccionCriticaUseCase
 from src.application.use_cases.autenticar_usuario import AutenticarUsuarioUseCase
+from src.application.use_cases.gestionar_privacidad import (
+    AceptarPrivacidadUseCase,
+    RechazarPrivacidadUseCase,
+)
+from src.application.use_cases.registrar_hash_encadenado import RegistrarHashEncadenadoUseCase
 from src.domain.exceptions import CredencialesInvalidasError
 from src.infrastructure.database.repositories.audit_log_repository import (
     SQLAlchemyAuditLogRepository,
 )
+from src.infrastructure.database.repositories.trazabilidad_repository import (
+    SQLAlchemyTrazabilidadRepository,
+)
 from src.infrastructure.database.repositories.usuario_repository import SQLAlchemyUsuarioRepository
 from src.interface.api.deps import CurrentUserDep, DbSessionDep, JWTHandlerDep, oauth2_scheme
-from src.interface.api.schemas import SSETicketResponse, TokenResponse
+from src.interface.api.schemas import PrivacidadResponse, SSETicketResponse, TokenResponse
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -66,7 +74,10 @@ async def login(
         ip_origen=ip,
     )
     await session.commit()
-    return TokenResponse(access_token=resultado.access_token)
+    return TokenResponse(
+        access_token=resultado.access_token,
+        require_privacy_consent=resultado.require_privacy_consent,
+    )
 
 
 @router.post("/sse-ticket", response_model=SSETicketResponse)
@@ -76,6 +87,48 @@ async def emitir_ticket_sse(
 ) -> SSETicketResponse:
     """Ticket efímero para abrir el stream SSE (EventSource no envía headers)."""
     return SSETicketResponse(ticket=jwt_handler.crear_ticket_sse(usuario.id))
+
+
+@router.post("/privacidad/aceptar", response_model=PrivacidadResponse)
+async def aceptar_privacidad(
+    usuario: CurrentUserDep,
+    session: DbSessionDep,
+    request: Request,
+) -> PrivacidadResponse:
+    """HU-44 Escenario 2: consentimiento explícito de la Ley N.° 29733."""
+    use_case = AceptarPrivacidadUseCase(
+        SQLAlchemyUsuarioRepository(session),
+        RegistrarHashEncadenadoUseCase(SQLAlchemyTrazabilidadRepository(session)),
+    )
+    actualizado = await use_case.execute(usuario, _ip_cliente(request))
+    await session.commit()
+    return PrivacidadResponse(
+        privacy_accepted=actualizado.privacy_accepted,
+        privacy_version_accepted=actualizado.privacy_version_accepted,
+    )
+
+
+@router.post("/privacidad/rechazar", status_code=status.HTTP_401_UNAUTHORIZED)
+async def rechazar_privacidad(
+    usuario: CurrentUserDep,
+    token: Annotated[str, Depends(oauth2_scheme)],
+    session: DbSessionDep,
+    jwt_handler: JWTHandlerDep,
+    request: Request,
+) -> None:
+    """HU-44 Escenario 3: rechazar revoca el token — sin política aceptada no hay sesión."""
+    payload = jwt_handler.decodificar_token(token)
+    request.app.state.token_revocation.registrar(payload.jti, payload.exp.timestamp())
+
+    use_case = RechazarPrivacidadUseCase(
+        RegistrarHashEncadenadoUseCase(SQLAlchemyTrazabilidadRepository(session))
+    )
+    await use_case.execute(usuario, _ip_cliente(request))
+    await session.commit()
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="No se puede continuar sin aceptar la política de privacidad",
+    )
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

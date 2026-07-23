@@ -17,10 +17,16 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    require_privacy_consent: bool = False
 
 
 class SSETicketResponse(BaseModel):
     ticket: str
+
+
+class PrivacidadResponse(BaseModel):
+    privacy_accepted: bool
+    privacy_version_accepted: str | None
 
 
 class UsuarioCreateRequest(BaseModel):
@@ -44,6 +50,13 @@ class UsuarioResponse(BaseModel):
     nombre: str
     email: str
     rol: Rol
+    is_active: bool = True
+    motivo_desactivacion: str | None = None
+    desactivado_en: datetime | None = None
+
+
+class DesactivarUsuarioRequest(BaseModel):
+    motivo: str = Field(min_length=1, max_length=50)
 
 
 class LecturaIngestRequest(BaseModel):
@@ -123,10 +136,25 @@ class TrazabilidadResponse(BaseModel):
     hash_actual: str
 
 
+class DetalleInconsistenciaResponse(BaseModel):
+    id: UUID
+    tipo_evento: str
+    timestamp: datetime
+    hash_esperado: str
+    hash_almacenado: str
+    mensaje: str
+
+
 class VerificacionIntegridadResponse(BaseModel):
     integra: bool
     total_registros: int
     primer_registro_inconsistente: int | None
+    detalle_inconsistencia: DetalleInconsistenciaResponse | None = None
+    registros_posteriores_afectados: int = 0
+
+
+class EstadoCadenaResponse(BaseModel):
+    cadena_comprometida: bool
 
 
 class ReporteBPAResponse(BaseModel):
@@ -136,6 +164,55 @@ class ReporteBPAResponse(BaseModel):
     lecturas: list[LecturaResponse]
     alertas: list[AlertaResponse]
     registros_trazabilidad: list[TrazabilidadResponse]
+
+
+class DispositivoResponse(BaseModel):
+    id: str
+    nombre: str | None
+    ubicacion: str | None
+    estado_conectividad: str
+    activo: bool
+    firmware_version: str
+    motivo_baja: str | None = None
+    descripcion_baja: str | None = None
+    dado_de_baja_en: datetime | None = None
+    reemplaza_a_device_id: str | None = None
+
+
+class DispositivoBajaRequest(BaseModel):
+    motivo: str = Field(min_length=1, max_length=50)
+    descripcion: str | None = Field(default=None, max_length=2000)
+    device_id_reemplazo: str | None = Field(default=None, max_length=50)
+
+
+class FirmwareReleaseCreateRequest(BaseModel):
+    version: str = Field(min_length=1, max_length=20)
+    hash_sha256: str = Field(min_length=64, max_length=64)
+    descripcion: str = Field(min_length=1, max_length=2000)
+
+
+class FirmwareReleaseResponse(BaseModel):
+    id: UUID
+    version: str
+    hash_sha256: str
+    descripcion: str
+    fecha_compilacion: datetime
+
+
+class FirmwareDespliegueCreateRequest(BaseModel):
+    device_id: str = Field(min_length=1, max_length=50)
+    version_objetivo: str = Field(min_length=1, max_length=20)
+    programado_para: datetime | None = None
+
+
+class FirmwareDespliegueResponse(BaseModel):
+    id: UUID
+    device_id: str
+    version_objetivo: str
+    estado: str
+    programado_para: datetime | None
+    resultado: str | None
+    completado_en: datetime | None
 
 
 class AuditLogResponse(BaseModel):

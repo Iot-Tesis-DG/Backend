@@ -61,6 +61,9 @@ async def get_current_user(
     usuario = await repositorio.obtener_por_id(payload.sub)
     if usuario is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
+    # HU-45: un token emitido antes de la desactivación deja de ser válido.
+    if not usuario.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario desactivado")
     return usuario
 
 
