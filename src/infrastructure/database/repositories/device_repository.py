@@ -19,6 +19,9 @@ class SQLAlchemyDeviceRepository(IDeviceRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def existe(self, device_id: str) -> bool:
+        return await self._session.get(DeviceModel, device_id) is not None
+
     async def obtener_o_crear(self, device_id: str) -> dict:
         model = await self._session.get(DeviceModel, device_id)
         if model is None:

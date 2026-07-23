@@ -26,3 +26,12 @@ class ILecturaRepository(ABC):
 
     @abstractmethod
     async def listar_recientes_por_device(self, device_id: str, limite: int) -> list[LecturaTermica]: ...
+
+    @abstractmethod
+    async def obtener_por_device_y_timestamp(
+        self, device_id: str, timestamp: datetime
+    ) -> LecturaTermica | None:
+        """Deduplicación/idempotencia (RF-07): localiza una lectura ya persistida
+        para el mismo dispositivo y el mismo instante exacto, de forma que un
+        reenvío MQTT (PUBACK perdido, QoS1) no genere un registro duplicado."""
+        ...

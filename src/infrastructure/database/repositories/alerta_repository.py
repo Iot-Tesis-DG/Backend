@@ -19,6 +19,11 @@ def _to_entity(model: ThermalAlertModel) -> AlertaTermica:
         revisada=model.revisada,
         revisada_por=model.revisada_por,
         created_at=model.created_at,
+        episodio_abierto=model.episodio_abierto == 1,
+        lectura_inicial_id=model.lectura_inicial_id,
+        lectura_mas_reciente_id=model.lectura_mas_reciente_id,
+        ultima_actualizacion=model.ultima_actualizacion,
+        cerrada_en=model.cerrada_en,
     )
 
 
@@ -34,6 +39,11 @@ class SQLAlchemyAlertaRepository(IAlertaRepository):
             mensaje=alerta.mensaje,
             revisada=alerta.revisada,
             revisada_por=alerta.revisada_por,
+            episodio_abierto=1 if alerta.episodio_abierto else None,
+            lectura_inicial_id=alerta.lectura_inicial_id or alerta.reading_id,
+            lectura_mas_reciente_id=alerta.lectura_mas_reciente_id or alerta.reading_id,
+            ultima_actualizacion=alerta.ultima_actualizacion,
+            cerrada_en=alerta.cerrada_en,
         )
         self._session.add(model)
         await self._session.flush()
@@ -66,6 +76,39 @@ class SQLAlchemyAlertaRepository(IAlertaRepository):
             raise ValueError(f"Alerta {alerta.id} no encontrada")
         model.revisada = alerta.revisada
         model.revisada_por = alerta.revisada_por
+        model.episodio_abierto = 1 if alerta.episodio_abierto else None
+        model.lectura_mas_reciente_id = alerta.lectura_mas_reciente_id
+        model.ultima_actualizacion = alerta.ultima_actualizacion
+        model.cerrada_en = alerta.cerrada_en
         await self._session.flush()
         await self._session.refresh(model)
         return _to_entity(model)
+
+    async def obtener_episodio_abierto(self, device_id: str) -> AlertaTermica | None:
+        stmt = (
+            select(ThermalAlertModel)
+            .where(ThermalAlertModel.device_id == device_id, ThermalAlertModel.episodio_abierto == 1)
+            .order_by(ThermalAlertModel.ultima_actualizacion.desc())
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        model = result.scalar_one_or_none()
+        return _to_entity(model) if model else None
+
+    async def obtener_ultimo_cerrado(
+        self, device_id: str, nivel_riesgo: NivelRiesgo
+    ) -> AlertaTermica | None:
+        stmt = (
+            select(ThermalAlertModel)
+            .where(
+                ThermalAlertModel.device_id == device_id,
+                ThermalAlertModel.nivel_riesgo == nivel_riesgo.value,
+                ThermalAlertModel.episodio_abierto.is_(None),
+                ThermalAlertModel.cerrada_en.is_not(None),
+            )
+            .order_by(ThermalAlertModel.cerrada_en.desc())
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        model = result.scalar_one_or_none()
+        return _to_entity(model) if model else None

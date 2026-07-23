@@ -1,7 +1,7 @@
 from collections.abc import AsyncGenerator, Callable
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +35,7 @@ JWTHandlerDep = Annotated[JWTHandler, Depends(get_jwt_handler)]
 
 
 async def get_current_user(
+    request: Request,
     token: Annotated[str, Depends(oauth2_scheme)],
     session: DbSessionDep,
     jwt_handler: JWTHandlerDep,
@@ -47,6 +48,14 @@ async def get_current_user(
             detail=str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+
+    # Revocación por jti: un token deslogueado deja de valer aunque no expire.
+    if request.app.state.token_revocation.contiene(payload.jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="El token fue revocado",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     repositorio = SQLAlchemyUsuarioRepository(session)
     usuario = await repositorio.obtener_por_id(payload.sub)

@@ -1,7 +1,20 @@
+import math
+from numbers import Real
+
 from src.domain.entities.alerta_termica import AlertaTermica
 from src.domain.entities.lectura_termica import LecturaTermica
 from src.domain.entities.registro_trazabilidad import RegistroTrazabilidad
 from src.interface.api.schemas import AlertaResponse, LecturaResponse, TrazabilidadResponse
+
+
+def _estado_sensor(valor: object | None, minimo: float, maximo: float) -> str:
+    if valor is None:
+        return "ausente"
+    if not isinstance(valor, Real) or isinstance(valor, bool) or not math.isfinite(valor):
+        return "invalido"
+    if not minimo <= valor <= maximo:
+        return "fisicamente_imposible"
+    return "valido"
 
 
 def lectura_to_response(lectura: LecturaTermica) -> LecturaResponse:
@@ -15,6 +28,17 @@ def lectura_to_response(lectura: LecturaTermica) -> LecturaResponse:
         apertura_refrigerador=lectura.apertura_refrigerador,
         estado_conectividad=lectura.estado_conectividad,
         nivel_riesgo=lectura.nivel_riesgo,
+        confianza_ia=lectura.confianza_ia,
+        modelo_version=lectura.modelo_version,
+        model_version=lectura.modelo_version,
+        origen_clasificacion=lectura.origen_clasificacion,
+        estado_inferencia=lectura.estado_inferencia,
+        motivo_no_inferencia=lectura.motivo_no_inferencia,
+        estado_sensores={
+            "temperatura_interna": _estado_sensor(lectura.temperatura_interna, -55.0, 125.0),
+            "temperatura_ambiental": _estado_sensor(lectura.temperatura_ambiental, -40.0, 125.0),
+            "humedad_ambiental": _estado_sensor(lectura.humedad_ambiental, 0.0, 100.0),
+        },
     )
 
 
@@ -28,6 +52,11 @@ def alerta_to_response(alerta: AlertaTermica) -> AlertaResponse:
         revisada=alerta.revisada,
         revisada_por=alerta.revisada_por,
         created_at=alerta.created_at,
+        episodio_abierto=alerta.episodio_abierto,
+        lectura_inicial_id=alerta.lectura_inicial_id,
+        lectura_mas_reciente_id=alerta.lectura_mas_reciente_id,
+        ultima_actualizacion=alerta.ultima_actualizacion,
+        cerrada_en=alerta.cerrada_en,
     )
 
 

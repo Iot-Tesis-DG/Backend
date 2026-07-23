@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from src.domain.repositories.i_trazabilidad_repository import ITrazabilidadRepository
-from src.domain.value_objects.hash_encadenado import GENESIS_HASH, HashEncadenado
+from src.domain.value_objects.hash_encadenado import GENESIS_HASH, HashEncadenado, timestamp_canonico
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,7 +23,7 @@ class VerificarIntegridadRegistroUseCase:
         previous_hash = GENESIS_HASH
         for indice, registro in enumerate(registros):
             esperado = HashEncadenado.calcular_hash(
-                previous_hash, registro.timestamp.isoformat(), registro.payload
+                previous_hash, timestamp_canonico(registro.timestamp), registro.payload
             )
             if registro.previous_hash != previous_hash or registro.hash_actual != esperado:
                 return ResultadoVerificacion(

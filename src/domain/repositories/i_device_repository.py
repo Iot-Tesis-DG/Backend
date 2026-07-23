@@ -3,6 +3,9 @@ from abc import ABC, abstractmethod
 
 class IDeviceRepository(ABC):
     @abstractmethod
+    async def existe(self, device_id: str) -> bool: ...
+
+    @abstractmethod
     async def obtener_o_crear(self, device_id: str) -> dict: ...
 
     @abstractmethod

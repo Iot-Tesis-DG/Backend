@@ -16,8 +16,11 @@ class SSEBroadcaster:
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         self._subscribers.discard(queue)
 
-    async def publicar(self, evento: dict) -> None:
+    async def publicar(self, evento: dict, tipo: str = "lectura") -> None:
+        """Publica evento SSE tipado. `tipo` permite alertas, recuperación y
+        estados IA sin obligar al cliente a inferirlos desde texto."""
         mensaje = json.dumps(evento, default=str, ensure_ascii=False)
+        mensaje = f"event: {tipo}\ndata: {mensaje}"
         for queue in list(self._subscribers):
             if queue.full():
                 continue

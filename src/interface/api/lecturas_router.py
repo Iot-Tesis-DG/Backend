@@ -7,15 +7,16 @@ from src.application.use_cases.clasificar_riesgo_termico import ClasificarRiesgo
 from src.application.use_cases.consultar_historial_termico import ConsultarHistorialTermicoUseCase
 from src.application.use_cases.registrar_lectura_termica import RegistrarLecturaTermicaUseCase
 from src.domain.entities.lectura_termica import LecturaTermica
-from src.domain.exceptions import LecturaInvalidaError
+from src.domain.exceptions import DispositivoNoAutorizadoError, LecturaInvalidaError
 from src.domain.value_objects.rol import Rol
 from src.infrastructure.ai.random_forest_service import get_random_forest_service
 from src.infrastructure.database.repositories.alerta_repository import SQLAlchemyAlertaRepository
+from src.infrastructure.database.repositories.device_repository import SQLAlchemyDeviceRepository
 from src.infrastructure.database.repositories.lectura_repository import SQLAlchemyLecturaRepository
 from src.infrastructure.database.repositories.trazabilidad_repository import (
     SQLAlchemyTrazabilidadRepository,
 )
-from src.interface.api.deps import DbSessionDep, require_roles
+from src.interface.api.deps import DbSessionDep, SettingsDep, require_roles
 from src.interface.api.mappers import lectura_to_response
 from src.interface.api.schemas import LecturaIngestRequest, LecturaResponse
 
@@ -26,6 +27,7 @@ router = APIRouter(prefix="/api/lecturas", tags=["lecturas"])
 async def ingestar_lectura(
     body: LecturaIngestRequest,
     session: DbSessionDep,
+    settings: SettingsDep,
     _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO)),
 ) -> LecturaResponse:
     lectura_repository = SQLAlchemyLecturaRepository(session)
@@ -34,7 +36,12 @@ async def ingestar_lectura(
     clasificar_use_case = ClasificarRiesgoTermicoUseCase(get_random_forest_service())
 
     use_case = RegistrarLecturaTermicaUseCase(
-        lectura_repository, alerta_repository, trazabilidad_repository, clasificar_use_case
+        lectura_repository,
+        alerta_repository,
+        trazabilidad_repository,
+        clasificar_use_case,
+        device_repository=SQLAlchemyDeviceRepository(session),
+        registro_dispositivos_estricto=settings.device_registry_estricto,
     )
     lectura = LecturaTermica(
         device_id=body.device_id,
@@ -47,6 +54,8 @@ async def ingestar_lectura(
     )
     try:
         lectura_guardada = await use_case.execute(lectura)
+    except DispositivoNoAutorizadoError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except LecturaInvalidaError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     await session.commit()

@@ -1,8 +1,21 @@
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 GENESIS_HASH = "0" * 64
+
+
+def timestamp_canonico(valor: datetime) -> str:
+    """Forma canónica del timestamp para hashear: siempre UTC con offset.
+
+    Motivo: algunos motores (SQLite en tests/desarrollo) devuelven datetimes
+    naive aunque la columna sea timezone-aware; sin canonicalizar, el hash
+    calculado al crear el registro no coincidiría al verificar la cadena.
+    """
+    if valor.tzinfo is None:
+        valor = valor.replace(tzinfo=timezone.utc)
+    return valor.astimezone(timezone.utc).isoformat()
 
 
 @dataclass(frozen=True, slots=True)

@@ -22,6 +22,11 @@ def _to_entity(model: ThermalReadingModel) -> LecturaTermica:
         estado_conectividad=model.estado_conectividad or "offline",
         nivel_riesgo=NivelRiesgo(model.nivel_riesgo) if model.nivel_riesgo else None,
         payload=model.payload,
+        modelo_version=model.modelo_version,
+        confianza_ia=model.confianza_ia,
+        origen_clasificacion=model.origen_clasificacion,
+        estado_inferencia=model.estado_inferencia,
+        motivo_no_inferencia=model.motivo_no_inferencia,
     )
 
 
@@ -47,6 +52,11 @@ class SQLAlchemyLecturaRepository(ILecturaRepository):
             nivel_riesgo=lectura.nivel_riesgo.value if lectura.nivel_riesgo else None,
             estado_conectividad=lectura.estado_conectividad,
             payload=lectura.payload,
+            modelo_version=lectura.modelo_version,
+            confianza_ia=lectura.confianza_ia,
+            origen_clasificacion=lectura.origen_clasificacion,
+            estado_inferencia=lectura.estado_inferencia,
+            motivo_no_inferencia=lectura.motivo_no_inferencia,
         )
         self._session.add(model)
         await self._session.flush()
@@ -91,3 +101,14 @@ class SQLAlchemyLecturaRepository(ILecturaRepository):
         )
         result = await self._session.execute(stmt)
         return [_to_entity(m) for m in result.scalars().all()]
+
+    async def obtener_por_device_y_timestamp(
+        self, device_id: str, timestamp: datetime
+    ) -> LecturaTermica | None:
+        stmt = select(ThermalReadingModel).where(
+            ThermalReadingModel.device_id == device_id,
+            ThermalReadingModel.timestamp == timestamp,
+        )
+        result = await self._session.execute(stmt)
+        model = result.scalar_one_or_none()
+        return _to_entity(model) if model else None

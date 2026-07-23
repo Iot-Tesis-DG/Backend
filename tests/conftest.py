@@ -4,6 +4,10 @@ os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("MQTT_ENABLED", "false")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-not-for-production")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+# El registro estricto de dispositivos se prueba explícitamente en
+# test_seguridad_api (vía override de settings); el resto de la suite
+# ingesta lecturas de devices ad-hoc con auto-registro.
+os.environ.setdefault("DEVICE_REGISTRY_ESTRICTO", "false")
 
 import pytest
 import pytest_asyncio

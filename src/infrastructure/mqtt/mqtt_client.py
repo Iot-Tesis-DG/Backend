@@ -1,11 +1,14 @@
 import asyncio
 import contextlib
+import logging
 import ssl
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import aiomqtt
 
 from src.infrastructure.config import Settings
+
+logger = logging.getLogger("infrastructure.mqtt.mqtt_client")
 
 TOPIC_LECTURAS = "farmacias/+/lecturas"
 TOPIC_EVENTOS = "farmacias/+/eventos"
@@ -35,7 +38,15 @@ async def consumir_mensajes(client: aiomqtt.Client, manejador: MensajeHandler) -
         try:
             await manejador(message)
         except Exception:
-            # No se propaga: un mensaje malformado no debe tumbar el consumidor MQTT.
+            # No se propaga (un mensaje malformado o un error inesperado del
+            # pipeline —incluida la inferencia de IA— no debe tumbar el
+            # consumidor MQTT), pero SÍ se audita en logs (corrige el hallazgo
+            # AI-02: antes este descarte era completamente silencioso, sin
+            # distinguir un fallo de inferencia de un bug de programación).
+            logger.exception(
+                "Error no controlado procesando mensaje MQTT en topic %s; descartado.",
+                message.topic,
+            )
             continue
 
 

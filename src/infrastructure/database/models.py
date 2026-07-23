@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text, Uuid, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -64,6 +64,12 @@ class UserModel(Base):
 
 class ThermalReadingModel(Base):
     __tablename__ = "thermal_readings"
+    __table_args__ = (
+        # Deduplicación/idempotencia (RF-07): un reenvío MQTT (PUBACK perdido,
+        # QoS1) para el mismo dispositivo y el mismo instante exacto no debe
+        # producir un segundo registro. Ver hallazgo B-04 de la auditoría.
+        UniqueConstraint("device_id", "timestamp", name="uq_thermal_readings_device_timestamp"),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     device_id: Mapped[str] = mapped_column(String(50), ForeignKey("devices.id"), nullable=False, index=True)
@@ -75,14 +81,36 @@ class ThermalReadingModel(Base):
     nivel_riesgo: Mapped[str | None] = mapped_column(String(30), nullable=True)
     estado_conectividad: Mapped[str | None] = mapped_column(String(20), nullable=True)
     payload: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    # Trazabilidad de la inferencia (RNF-04, hallazgo AI-06 de la auditoría de
+    # IA): con qué versión de modelo y con qué confianza se clasificó esta
+    # lectura específica. NULL cuando no se ejecutó inferencia (ORIGEN_SIN_DATO).
+    modelo_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    confianza_ia: Mapped[float | None] = mapped_column(Float, nullable=True)
+    origen_clasificacion: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # AIV-07 (fase de corrección): estado real de la inferencia y motivo breve
+    # cuando no fue "completada". NULL en registros anteriores a esta migración.
+    estado_inferencia: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    motivo_no_inferencia: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = _created_at_column()
 
     device: Mapped[DeviceModel] = relationship(back_populates="lecturas")
-    alertas: Mapped[list["ThermalAlertModel"]] = relationship(back_populates="lectura")
+    alertas: Mapped[list["ThermalAlertModel"]] = relationship(
+        back_populates="lectura", foreign_keys="ThermalAlertModel.reading_id"
+    )
 
 
 class ThermalAlertModel(Base):
     __tablename__ = "thermal_alerts"
+    __table_args__ = (
+        # AIV-02: garantía de "una sola alerta abierta por dispositivo y tipo
+        # de riesgo" a nivel de base de datos, no solo en memoria. Un índice
+        # único parcial (solo sobre filas abiertas) permite reabrir un nuevo
+        # episodio del mismo tipo una vez cerrado el anterior.
+        UniqueConstraint(
+            "device_id", "nivel_riesgo", "episodio_abierto",
+            name="uq_thermal_alerts_episodio_abierto_por_device_y_riesgo",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     reading_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("thermal_readings.id"), nullable=False)
@@ -91,9 +119,18 @@ class ThermalAlertModel(Base):
     mensaje: Mapped[str] = mapped_column(Text, nullable=False)
     revisada: Mapped[bool] = mapped_column(Boolean, default=False)
     revisada_por: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    # AIV-02 — control de episodio/tormenta de alertas: mientras el episodio
+    # sigue abierto, esta columna vale 1 (permitiendo que el UNIQUE la
+    # detecte); al cerrarse pasa a NULL (varias alertas cerradas del mismo
+    # device+riesgo pueden coexistir sin violar la restricción única).
+    episodio_abierto: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1)
+    lectura_inicial_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("thermal_readings.id"), nullable=False)
+    lectura_mas_reciente_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("thermal_readings.id"), nullable=False)
+    ultima_actualizacion: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now())
+    cerrada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = _created_at_column()
 
-    lectura: Mapped[ThermalReadingModel] = relationship(back_populates="alertas")
+    lectura: Mapped[ThermalReadingModel] = relationship(back_populates="alertas", foreign_keys=[reading_id])
     acciones_correctivas: Mapped[list["CorrectiveActionModel"]] = relationship(back_populates="alerta")
 
 

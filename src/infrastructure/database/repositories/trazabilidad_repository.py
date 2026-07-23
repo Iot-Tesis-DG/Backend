@@ -1,10 +1,20 @@
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.entities.registro_trazabilidad import RegistroTrazabilidad
 from src.domain.repositories.i_trazabilidad_repository import ITrazabilidadRepository
 from src.domain.value_objects.hash_encadenado import GENESIS_HASH, HashEncadenado
 from src.infrastructure.database.models import TraceabilityRecordModel
+
+# Clave arbitraria fija para el candado consultivo de PostgreSQL que serializa
+# la sección crítica "leer último hash + insertar siguiente eslabón" a nivel de
+# base de datos. Complementa (no sustituye) el asyncio.Lock de proceso en
+# RegistrarHashEncadenadoUseCase: el lock de proceso alcanza para un único
+# worker; pg_advisory_xact_lock además protege ante múltiples workers/instancias
+# escribiendo contra la misma base de datos. Se libera automáticamente al
+# terminar la transacción (variante _xact_). No tiene efecto en SQLite (los
+# tests con aiosqlite omiten esta sentencia, ver dialect check abajo).
+_CLAVE_CANDADO_CADENA_HASH = 911777001
 
 
 def _to_entity(model: TraceabilityRecordModel) -> RegistroTrazabilidad:
@@ -39,6 +49,12 @@ class SQLAlchemyTrazabilidadRepository(ITrazabilidadRepository):
         return _to_entity(model)
 
     async def obtener_ultimo_hash(self) -> str:
+        if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
+            # Defensa en profundidad multi-worker: serializa a nivel de BD.
+            await self._session.execute(
+                text("SELECT pg_advisory_xact_lock(:clave)"),
+                {"clave": _CLAVE_CANDADO_CADENA_HASH},
+            )
         stmt = select(TraceabilityRecordModel.hash_actual).order_by(
             TraceabilityRecordModel.created_at.desc()
         ).limit(1)

@@ -1,10 +1,12 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from src.domain.value_objects.nivel_riesgo import NivelRiesgo
 from src.domain.value_objects.rol import Rol
+
+PASSWORD_MIN_LENGTH = 10
 
 
 class LoginRequest(BaseModel):
@@ -17,11 +19,22 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class SSETicketResponse(BaseModel):
+    ticket: str
+
+
 class UsuarioCreateRequest(BaseModel):
     nombre: str = Field(min_length=1, max_length=120)
     email: EmailStr
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=128)
     rol: Rol
+
+    @field_validator("password")
+    @classmethod
+    def _politica_password(cls, valor: str) -> str:
+        if not any(c.isdigit() for c in valor) or not any(c.isalpha() for c in valor):
+            raise ValueError("La contraseña debe combinar letras y números")
+        return valor
 
 
 class UsuarioResponse(BaseModel):
@@ -55,6 +68,19 @@ class LecturaResponse(BaseModel):
     apertura_refrigerador: bool
     estado_conectividad: str
     nivel_riesgo: NivelRiesgo | None
+    # Evidencia de la inferencia de IA (RNF-04, corrige hallazgo AI-07 de la
+    # auditoría: el contrato SSE no exponía confianza ni versión del modelo).
+    confianza_ia: float | None = None
+    modelo_version: str | None = None
+    # Alias en inglés requerido por integración externa; se mantiene
+    # `modelo_version` para no romper clientes ya desplegados.
+    model_version: str | None = None
+    # AIV-04 (fase de corrección): procedencia y estado real de la
+    # clasificación — antes solo auditables en base de datos, no en la API.
+    origen_clasificacion: str | None = None
+    estado_inferencia: str | None = None
+    motivo_no_inferencia: str | None = None
+    estado_sensores: dict[str, str] | None = None
 
 
 class AlertaResponse(BaseModel):
@@ -66,6 +92,12 @@ class AlertaResponse(BaseModel):
     revisada: bool
     revisada_por: UUID | None = None
     created_at: datetime | None = None
+    # AIV-02 (fase de corrección): evidencia de episodio, no de lectura aislada.
+    episodio_abierto: bool = True
+    lectura_inicial_id: UUID | None = None
+    lectura_mas_reciente_id: UUID | None = None
+    ultima_actualizacion: datetime | None = None
+    cerrada_en: datetime | None = None
 
 
 class AccionCorrectivaCreateRequest(BaseModel):
