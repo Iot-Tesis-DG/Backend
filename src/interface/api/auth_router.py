@@ -18,7 +18,7 @@ from src.infrastructure.database.repositories.trazabilidad_repository import (
     SQLAlchemyTrazabilidadRepository,
 )
 from src.infrastructure.database.repositories.usuario_repository import SQLAlchemyUsuarioRepository
-from src.interface.api.deps import CurrentUserDep, DbSessionDep, JWTHandlerDep, oauth2_scheme
+from src.interface.api.deps import CurrentUserDep, CurrentUserSinPrivacidadDep, DbSessionDep, JWTHandlerDep, oauth2_scheme
 from src.interface.api.schemas import PrivacidadResponse, SSETicketResponse, TokenResponse
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -91,7 +91,7 @@ async def emitir_ticket_sse(
 
 @router.post("/privacidad/aceptar", response_model=PrivacidadResponse)
 async def aceptar_privacidad(
-    usuario: CurrentUserDep,
+    usuario: CurrentUserSinPrivacidadDep,
     session: DbSessionDep,
     request: Request,
 ) -> PrivacidadResponse:
@@ -110,7 +110,7 @@ async def aceptar_privacidad(
 
 @router.post("/privacidad/rechazar", status_code=status.HTTP_401_UNAUTHORIZED)
 async def rechazar_privacidad(
-    usuario: CurrentUserDep,
+    usuario: CurrentUserSinPrivacidadDep,
     token: Annotated[str, Depends(oauth2_scheme)],
     session: DbSessionDep,
     jwt_handler: JWTHandlerDep,

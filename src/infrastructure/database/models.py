@@ -65,10 +65,9 @@ class UserModel(Base):
     email: Mapped[str] = mapped_column(String(150), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     rol_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("roles.id"), nullable=False)
-    created_at: Mapped[datetime] = _created_at_column()
 
     # HU-44: consentimiento explícito de la Ley N.° 29733.
-    privacy_accepted: Mapped[bool] = mapped_column(Boolean, default=False)
+    privacy_accepted: Mapped[bool] = mapped_column(Boolean, default=True)
     privacy_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     privacy_version_accepted: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
@@ -80,6 +79,7 @@ class UserModel(Base):
         Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     anonymized_for_gdpr: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = _created_at_column()
 
     rol: Mapped[RoleModel] = relationship(back_populates="usuarios")
 

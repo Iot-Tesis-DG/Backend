@@ -64,10 +64,51 @@ async def get_current_user(
     # HU-45: un token emitido antes de la desactivación deja de ser válido.
     if not usuario.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario desactivado")
+    # HU-44: el usuario debe haber aceptado la política de privacidad.
+    if not getattr(usuario, 'privacy_accepted', True):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Debe aceptar la política de privacidad y consentimiento para acceder a este recurso",
+        )
     return usuario
 
 
 CurrentUserDep = Annotated[Usuario, Depends(get_current_user)]
+
+
+async def get_current_user_sin_privacidad(
+    request: Request,
+    token: Annotated[str, Depends(oauth2_scheme)],
+    session: DbSessionDep,
+    jwt_handler: JWTHandlerDep,
+) -> Usuario:
+    try:
+        payload = jwt_handler.decodificar_token(token)
+    except CredencialesInvalidasError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    if request.app.state.token_revocation.contiene(payload.jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="El token fue revocado",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    repositorio = SQLAlchemyUsuarioRepository(session)
+    usuario = await repositorio.obtener_por_id(payload.sub)
+    if usuario is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
+    # HU-45: usuario desactivado no puede acceder.
+    if not usuario.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario desactivado")
+    return usuario
+
+
+CurrentUserSinPrivacidadDep = Annotated[Usuario, Depends(get_current_user_sin_privacidad)]
 
 
 def require_roles(*roles_permitidos: Rol) -> Callable[[Usuario], Usuario]:

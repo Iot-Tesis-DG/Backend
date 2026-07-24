@@ -63,7 +63,7 @@ async def crear_usuario(db_session_factory):
     async def _crear(nombre: str, email: str, password: str, rol: Rol) -> Usuario:
         async with db_session_factory() as session:
             repo = SQLAlchemyUsuarioRepository(session)
-            usuario = Usuario(nombre=nombre, email=email, password_hash=hash_password(password), rol=rol)
+            usuario = Usuario(nombre=nombre, email=email, password_hash=hash_password(password), rol=rol, privacy_accepted=True)
             creado = await repo.agregar(usuario)
             await session.commit()
             return creado
