@@ -1,12 +1,21 @@
+import io
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 
 from src.application.use_cases.auditar_accion_critica import AuditarAccionCriticaUseCase
 from src.application.use_cases.exportar_reporte_bpa import ExportarReporteBPAUseCase
+from src.application.use_cases.exportar_reporte_bpa_pdf import ExportarReporteBPAPDFUseCase
+from src.application.use_cases.verificar_integridad_registro import (
+    VerificarIntegridadRegistroUseCase,
+)
 from src.domain.value_objects.rol import Rol
 from src.infrastructure.database.repositories.alerta_repository import SQLAlchemyAlertaRepository
 from src.infrastructure.database.repositories.audit_log_repository import SQLAlchemyAuditLogRepository
+from src.infrastructure.database.repositories.checklist_repository import (
+    SQLAlchemyChecklistRepository,
+)
 from src.infrastructure.database.repositories.lectura_repository import SQLAlchemyLecturaRepository
 from src.infrastructure.database.repositories.reporte_repository import SQLAlchemyReporteRepository
 from src.infrastructure.database.repositories.trazabilidad_repository import (
@@ -59,4 +68,75 @@ async def exportar_reporte_bpa(
         lecturas=[lectura_to_response(l) for l in reporte.lecturas],
         alertas=[alerta_to_response(a) for a in reporte.alertas],
         registros_trazabilidad=[trazabilidad_to_response(r) for r in reporte.registros_trazabilidad],
+    )
+
+
+@router.get(
+    "/bpa/pdf",
+    response_class=StreamingResponse,
+    responses={200: {"content": {"application/pdf": {}}, "description": "Reporte BPA en PDF"}},
+)
+async def exportar_reporte_bpa_pdf(
+    fecha_desde: datetime,
+    fecha_hasta: datetime,
+    session: DbSessionDep,
+    request: Request,
+    usuario=Depends(require_roles(Rol.FARMACEUTICO, Rol.ADMINISTRADOR)),
+    device_id: str | None = None,
+) -> StreamingResponse:
+    """RF-13 / HU-38: descarga el reporte BPA del período en PDF, incluyendo el
+    veredicto de integridad de la cadena SHA-256 dentro del propio documento."""
+    if fecha_desde > fecha_hasta:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="fecha_desde no puede ser posterior a fecha_hasta",
+        )
+
+    trazabilidad_repository = SQLAlchemyTrazabilidadRepository(session)
+    # Verificación de SOLO LECTURA: se omiten a propósito el repositorio de
+    # corrupción y el de hash encadenado. Con ellos, descargar un reporte
+    # dispararía eventos de emergencia y snapshots forenses como efecto
+    # colateral — la detección activa vive en GET /api/trazabilidad/verificar.
+    verificar_integridad = VerificarIntegridadRegistroUseCase(trazabilidad_repository)
+
+    use_case = ExportarReporteBPAPDFUseCase(
+        SQLAlchemyLecturaRepository(session),
+        SQLAlchemyAlertaRepository(session),
+        trazabilidad_repository,
+        SQLAlchemyReporteRepository(session),
+        SQLAlchemyChecklistRepository(session),
+        verificar_integridad,
+    )
+    pdf_bytes = await use_case.execute(
+        usuario_id=usuario.id,
+        usuario_nombre=usuario.nombre,
+        fecha_desde=fecha_desde,
+        fecha_hasta=fecha_hasta,
+        device_id=device_id,
+    )
+
+    await AuditarAccionCriticaUseCase(SQLAlchemyAuditLogRepository(session)).execute(
+        usuario_id=usuario.id,
+        accion="EXPORTAR_REPORTE_BPA_PDF",
+        recurso="reportes/bpa/pdf",
+        detalle={
+            "device_id": device_id,
+            "fecha_desde": fecha_desde.isoformat(),
+            "fecha_hasta": fecha_hasta.isoformat(),
+            "bytes": len(pdf_bytes),
+        },
+        ip_origen=request.client.host if request.client else None,
+    )
+    await session.commit()
+
+    nombre = f"reporte_bpa_{fecha_desde.date().isoformat()}_{fecha_hasta.date().isoformat()}.pdf"
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{nombre}"',
+            # El frontend descarga vía XHR: sin exponer la cabecera, no puede
+            # leer el nombre de archivo sugerido por el servidor.
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
     )

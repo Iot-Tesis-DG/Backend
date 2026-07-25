@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     api_rate_limit_ventana_segundos: int = 60
     security_state_max_entries: int = 10_000
 
+    # Cuota propia de la ingesta REST de lecturas (B13). Es la vía secundaria:
+    # el reenvío del buffer offline del ESP32 viaja por MQTT (RF-06) y no pasa
+    # por aquí, así que este techo no compromete el RNF-07 (sync ≤30 s). 120/min
+    # equivale a dos lecturas por segundo, muy por encima del muestreo real de
+    # un refrigerador y muy por debajo de lo que cuesta saturar la API.
+    ingesta_rate_limit_max_solicitudes: int = 120
+    ingesta_rate_limit_ventana_segundos: int = 60
+
     # Tamaño máximo del cuerpo de una request (payloads IoT y formularios son
     # pequeños; cualquier cosa mayor es anómala).
     max_body_bytes: int = 64 * 1024
@@ -45,6 +53,26 @@ class Settings(BaseSettings):
     allowed_hosts: list[str] = []
 
     password_min_length: int = 10
+
+    # HU-23: aviso fuera de la aplicación ante excursión crítica. Ambos canales
+    # llegan deshabilitados: sin credenciales configuradas el sistema funciona
+    # igual, solo sin notificar. Las credenciales viven en el entorno (RNF-05),
+    # nunca en el código.
+    smtp_enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 465
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_to: str = ""
+
+    telegram_enabled: bool = False
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+
+    # Un episodio crítico genera una lectura cada pocos segundos; sin esta
+    # ventana el responsable recibiría cientos de avisos y silenciaría el canal.
+    notificacion_cooldown_minutos: int = 15
 
     cors_origins: list[str] = ["http://localhost:5173"]
 
@@ -90,6 +118,21 @@ class Settings(BaseSettings):
                     )
                 if self.mqtt_host == "tu-instancia.emqx.cloud":
                     raise ValueError("MQTT_HOST no puede usar el valor de ejemplo en producción.")
+            # HU-23: habilitar un canal de aviso sin sus credenciales dejaría
+            # al sistema creyendo que notifica cuando en realidad falla en cada
+            # excursión crítica — el peor modo de fallo posible aquí.
+            if self.smtp_enabled and not all(
+                (self.smtp_host, self.smtp_user, self.smtp_password, self.smtp_from, self.smtp_to)
+            ):
+                raise ValueError(
+                    "SMTP_ENABLED requiere SMTP_HOST, SMTP_USER, SMTP_PASSWORD, SMTP_FROM y SMTP_TO."
+                )
+            if self.telegram_enabled and not all(
+                (self.telegram_bot_token, self.telegram_chat_id)
+            ):
+                raise ValueError(
+                    "TELEGRAM_ENABLED requiere TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID."
+                )
         return self
 
 

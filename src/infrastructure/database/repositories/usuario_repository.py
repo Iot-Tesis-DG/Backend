@@ -44,11 +44,25 @@ class SQLAlchemyUsuarioRepository(IUsuarioRepository):
 
     async def agregar(self, usuario: Usuario) -> Usuario:
         rol_model = await self._obtener_rol_model(usuario.rol)
+        # Se persisten TODOS los campos de la entidad, no solo los de
+        # identificación. Antes se omitían los de privacidad (HU-44) y ciclo de
+        # vida (HU-45), de modo que la fila la rellenaban los `default` del
+        # modelo: un usuario creado como inactivo o con consentimiento ya
+        # registrado quedaba guardado activo y sin ese consentimiento, en
+        # silencio y sin que `agregar` devolviera nada distinto.
         model = UserModel(
             nombre=usuario.nombre,
             email=usuario.email,
             password_hash=usuario.password_hash,
             rol_id=rol_model.id,
+            privacy_accepted=usuario.privacy_accepted,
+            privacy_accepted_at=usuario.privacy_accepted_at,
+            privacy_version_accepted=usuario.privacy_version_accepted,
+            is_active=usuario.is_active,
+            motivo_desactivacion=usuario.motivo_desactivacion,
+            desactivado_en=usuario.desactivado_en,
+            desactivado_por=usuario.desactivado_por,
+            anonymized_for_gdpr=usuario.anonymized_for_gdpr,
         )
         self._session.add(model)
         await self._session.flush()

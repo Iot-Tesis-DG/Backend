@@ -1,10 +1,25 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import math
 from numbers import Real
 from uuid import UUID
 
 from src.domain.value_objects.nivel_riesgo import NivelRiesgo
+
+# B-10 — ventana temporal admisible de una lectura entrante.
+#
+# Futuro: tolerancia mínima, solo para absorber la deriva del reloj del ESP32
+# frente al servidor. Un dispositivo no puede reportar el futuro, y aceptarlo
+# permitiría "adelantar" registros para desplazar el orden de la cadena hash.
+DERIVA_FUTURO_MAXIMA = timedelta(minutes=10)
+#
+# Pasado: generoso a propósito. Cuando el nodo pierde conectividad almacena las
+# lecturas y las reenvía al reconectar; una ventana corta (p. ej. 2 horas)
+# descartaría en silencio datos legítimos de una caída de red nocturna, que es
+# justo el escenario donde la evidencia térmica más importa. El límite existe
+# para rechazar valores absurdos (relojes sin sincronizar, epoch 1970), no
+# para acotar el reenvío normal.
+ANTIGUEDAD_MAXIMA = timedelta(hours=48)
 
 
 @dataclass(slots=True)
@@ -53,3 +68,22 @@ class LecturaTermica:
             ):
                 return False
         return True
+
+    @staticmethod
+    def es_timestamp_valido(
+        timestamp: datetime, ahora: datetime | None = None
+    ) -> tuple[bool, str]:
+        """B-10: verifica que el instante declarado por el dispositivo sea
+        plausible. Devuelve (válido, motivo) para que quien llame pueda
+        auditar el motivo exacto del rechazo."""
+        ahora = ahora or datetime.now(tz=timezone.utc)
+        # SQLite devuelve datetimes naive aunque la columna sea aware; se
+        # asume UTC, igual criterio que `timestamp_canonico` en la cadena hash.
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+        if timestamp > ahora + DERIVA_FUTURO_MAXIMA:
+            return False, "timestamp_futuro"
+        if timestamp < ahora - ANTIGUEDAD_MAXIMA:
+            return False, "timestamp_demasiado_antiguo"
+        return True, "ok"

@@ -2,7 +2,7 @@
 la confianza deben persistirse por lectura y llegar en la respuesta de la API
 (el mismo contrato que consume el frontend vía SSE)."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from tests.conftest import auth_header
 
@@ -38,7 +38,10 @@ async def test_lectura_persiste_confianza_y_version_del_modelo(client, token_tec
 async def test_lectura_sin_temperatura_interna_no_tiene_confianza_ni_alerta(client, token_tecnico):
     response = client.post(
         "/api/lecturas",
-        json=_payload(timestamp="2026-07-22T20:00:00Z", temperatura_interna=None),
+        json=_payload(
+            timestamp=(datetime.now(tz=timezone.utc) - timedelta(minutes=5)).isoformat(),
+            temperatura_interna=None,
+        ),
         headers=auth_header(token_tecnico),
     )
 

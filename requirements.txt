@@ -16,3 +16,7 @@ numpy>=1.26.0
 pandas>=2.2.0
 python-multipart>=0.0.12
 python-dotenv>=1.0.0
+# RF-13 / HU-38: generación del reporte BPA en PDF. ReportLab es Python puro
+# (wheels sin dependencias del sistema); WeasyPrint se descartó porque exige
+# libpango/libcairo instalados en el host, lo que rompía el despliegue.
+reportlab>=4.2.0

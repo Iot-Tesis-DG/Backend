@@ -7,6 +7,7 @@ import aiomqtt
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from pydantic import ValidationError
 
 from src.application.use_cases.auditar_accion_critica import AuditarAccionCriticaUseCase
 from src.application.use_cases.clasificar_riesgo_termico import ClasificarRiesgoTermicoUseCase
@@ -26,13 +27,19 @@ from src.infrastructure.database.repositories.trazabilidad_repository import (
 )
 from src.infrastructure.database.session import _session_factory
 from src.infrastructure.mqtt.mqtt_client import mqtt_session
-from src.infrastructure.mqtt.payload_schema import LecturaPayload
+from src.infrastructure.notifications.notificacion_service import NotificacionService
+from src.infrastructure.mqtt.payload_schema import (
+    EventoDispositivoPayload,
+    LecturaPayload,
+    TipoEventoDispositivo,
+)
 from src.infrastructure.security.rate_limiter import SlidingWindowRateLimiter
 from src.infrastructure.security.revocation_store import JtiStore
 from src.interface.api.api_protection import instalar_proteccion_api
 from src.interface.api.alertas_router import router as alertas_router
 from src.interface.api.auditoria_router import router as auditoria_router
 from src.interface.api.auth_router import router as auth_router
+from src.interface.api.checklist_router import router as checklist_router
 from src.interface.api.dispositivos_router import router as dispositivos_router
 from src.interface.api.firmware_router import router as firmware_router
 from src.interface.api.ia_router import router as ia_router
@@ -48,16 +55,105 @@ from src.interface.api.usuarios_router import router as usuarios_router
 logger = logging.getLogger("interface.main")
 
 
-def _device_id_del_topic(topic: str) -> str | None:
-    """En `farmacias/{device_id}/lecturas` el segmento intermedio identifica
+def _device_id_del_topic(topic: str, sufijo: str = "lecturas") -> str | None:
+    """En `farmacias/{device_id}/{sufijo}` el segmento intermedio identifica
     al dispositivo autenticado ante el broker."""
     partes = topic.split("/")
-    if len(partes) != 3 or partes[0] != "farmacias" or partes[2] != "lecturas":
+    if len(partes) != 3 or partes[0] != "farmacias" or partes[2] != sufijo:
         return None
     return partes[1] or None
 
 
 async def _procesar_mensaje_mqtt(message: aiomqtt.Message, broadcaster: SSEBroadcaster) -> None:
+    """Despacha según el tópico. B-09: los mensajes de `/eventos` tienen su
+    propio esquema; antes se validaban contra LecturaPayload, fallaban y se
+    descartaban en silencio, así que las desconexiones del nodo nunca se
+    registraban."""
+    topico = str(message.topic)
+    if topico.endswith("/eventos"):
+        return await _procesar_evento_mqtt(message, broadcaster)
+    return await _procesar_lectura_mqtt(message, broadcaster)
+
+
+async def _procesar_evento_mqtt(message: aiomqtt.Message, broadcaster: SSEBroadcaster) -> None:
+    try:
+        evento = EventoDispositivoPayload.model_validate_json(message.payload)
+    except ValidationError as exc:
+        logger.warning("Evento MQTT inválido en tópico %s: %s", message.topic, exc.error_count())
+        return
+
+    # Mismo control anti-suplantación que en las lecturas: el device_id del
+    # cuerpo debe coincidir con el tópico sobre el que el broker autorizó
+    # publicar; si no, un nodo podría declarar offline a otro.
+    device_topic = _device_id_del_topic(str(message.topic), sufijo="eventos")
+    if device_topic is None or device_topic != evento.device_id:
+        logger.warning(
+            "Descartado: evento con device_id (%s) que no coincide con el tópico (%s)",
+            evento.device_id,
+            device_topic,
+        )
+        return
+
+    async with _session_factory() as session:
+        device_repository = SQLAlchemyDeviceRepository(session)
+        auditoria = AuditarAccionCriticaUseCase(SQLAlchemyAuditLogRepository(session))
+        # Un evento sobre un dispositivo no provisionado no debe crearlo por la
+        # puerta de atrás: se audita y se descarta.
+        if not await device_repository.existe(evento.device_id):
+            await auditoria.execute(
+                usuario_id=None,
+                accion="EVENTO_DISPOSITIVO_DESCONOCIDO",
+                recurso="mqtt/eventos",
+                detalle={"device_id": evento.device_id, "tipo_evento": evento.tipo_evento.value},
+                ip_origen=None,
+            )
+            await session.commit()
+            logger.warning("Evento de dispositivo no registrado: %s", evento.device_id)
+            return
+
+        detalle_auditoria: dict = {"tipo_evento": evento.tipo_evento.value}
+        if evento.detalle:
+            detalle_auditoria["detalle"] = evento.detalle
+
+        match evento.tipo_evento:
+            case TipoEventoDispositivo.LWT_OFFLINE:
+                await device_repository.actualizar_estado_conectividad(evento.device_id, "offline")
+                accion, tipo_sse = "DISPOSITIVO_OFFLINE", "desconexion"
+            case TipoEventoDispositivo.LWT_ONLINE:
+                await device_repository.actualizar_estado_conectividad(evento.device_id, "online")
+                accion, tipo_sse = "DISPOSITIVO_ONLINE", "reconexion"
+            case TipoEventoDispositivo.ERROR_SENSOR:
+                accion, tipo_sse = "ERROR_SENSOR", "fallo_sensor"
+            case TipoEventoDispositivo.FIRMWARE_UPDATE:
+                if evento.firmware_version:
+                    await device_repository.actualizar_firmware_version(
+                        evento.device_id, evento.firmware_version
+                    )
+                    detalle_auditoria["firmware_version"] = evento.firmware_version
+                accion, tipo_sse = "FIRMWARE_ACTUALIZADO", "firmware_actualizado"
+
+        await auditoria.execute(
+            usuario_id=None,
+            accion=accion,
+            recurso=f"dispositivos/{evento.device_id}",
+            detalle=detalle_auditoria,
+            ip_origen=None,
+        )
+        await session.commit()
+
+    await broadcaster.publicar(
+        {
+            "device_id": evento.device_id,
+            "tipo_evento": evento.tipo_evento.value,
+            "timestamp": evento.timestamp.isoformat(),
+            "detalle": evento.detalle,
+            "firmware_version": evento.firmware_version,
+        },
+        tipo_sse,
+    )
+
+
+async def _procesar_lectura_mqtt(message: aiomqtt.Message, broadcaster: SSEBroadcaster) -> None:
     payload = LecturaPayload.model_validate_json(message.payload)
     settings = get_settings()
 
@@ -84,6 +180,8 @@ async def _procesar_mensaje_mqtt(message: aiomqtt.Message, broadcaster: SSEBroad
             clasificar_use_case,
             device_repository=SQLAlchemyDeviceRepository(session),
             registro_dispositivos_estricto=settings.device_registry_estricto,
+            audit_log_repository=SQLAlchemyAuditLogRepository(session),
+            notificacion_service=NotificacionService(settings),
         )
 
         lectura = LecturaTermica(
@@ -119,8 +217,14 @@ async def _procesar_mensaje_mqtt(message: aiomqtt.Message, broadcaster: SSEBroad
             await session.commit()
             logger.warning("Dispositivo no registrado rechazado: %s", payload.device_id)
             return
-        except LecturaInvalidaError:
-            logger.warning("Lectura inválida descartada para device %s", payload.device_id)
+        except LecturaInvalidaError as exc:
+            # El caso de uso ya dejó el motivo del rechazo en audit_logs (p. ej.
+            # LECTURA_RECHAZADA_TIMESTAMP); hay que confirmarlo o se pierde al
+            # cerrarse la sesión sin commit.
+            await session.commit()
+            logger.warning(
+                "Lectura inválida descartada para device %s: %s", payload.device_id, exc
+            )
             return
         episodio_actual = await alerta_repository.obtener_episodio_abierto(payload.device_id)
         await session.commit()
@@ -222,6 +326,7 @@ def create_app() -> FastAPI:
     app.include_router(sse_router)
     app.include_router(dispositivos_router)
     app.include_router(firmware_router)
+    app.include_router(checklist_router)
 
     @app.get("/health", tags=["health"])
     async def health() -> dict:

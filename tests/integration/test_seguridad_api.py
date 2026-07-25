@@ -1,6 +1,8 @@
 """Controles de seguridad transversales: headers, rate limiting, SSE y política de contraseñas."""
 
 import jwt as pyjwt
+from datetime import datetime, timezone
+
 import pytest
 
 from src.domain.value_objects.rol import Rol
@@ -249,7 +251,7 @@ async def test_dispositivo_no_registrado_se_rechaza_en_modo_estricto(
 
     lectura = {
         "device_id": "INTRUSO-99",
-        "timestamp": "2026-07-11T10:00:00Z",
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
         "temperatura_interna": 5.0,
         "temperatura_ambiental": 21.0,
         "humedad_ambiental": 55.0,

@@ -1,9 +1,16 @@
+import logging
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from src.domain.entities.alerta_termica import AlertaTermica
 from src.domain.repositories.i_alerta_repository import IAlertaRepository
 from src.domain.value_objects.nivel_riesgo import NivelRiesgo
+
+if TYPE_CHECKING:
+    from src.infrastructure.notifications.notificacion_service import NotificacionService
+
+logger = logging.getLogger("application.generar_alerta")
 
 MENSAJES_POR_RIESGO = {
     NivelRiesgo.RIESGO_PREVENTIVO: "Riesgo preventivo: la temperatura se acerca al límite del rango 2-8 C.",
@@ -37,8 +44,39 @@ class GenerarAlertaUseCase:
       vez de crear una fila nueva. Si no, se crea una alerta nueva.
     """
 
-    def __init__(self, alerta_repository: IAlertaRepository) -> None:
+    def __init__(
+        self,
+        alerta_repository: IAlertaRepository,
+        notificacion_service: "NotificacionService | None" = None,
+    ) -> None:
         self._alerta_repository = alerta_repository
+        self._notificacion_service = notificacion_service
+
+    async def _avisar_si_es_apertura_critica(
+        self,
+        alerta: AlertaTermica | None,
+        episodio_previo: AlertaTermica | None,
+        temperatura: float | None,
+        timestamp: datetime,
+    ) -> None:
+        """HU-23: solo se avisa al ABRIR (o reabrir) un episodio crítico, no en
+        cada lectura del mismo episodio. El servicio aplica además su propio
+        cooldown por dispositivo."""
+        if self._notificacion_service is None or alerta is None:
+            return
+        if alerta.nivel_riesgo != NivelRiesgo.EXCURSION_CRITICA:
+            return
+        # Ya había un episodio crítico abierto: es continuación, no un evento nuevo.
+        if episodio_previo is not None and episodio_previo.nivel_riesgo == NivelRiesgo.EXCURSION_CRITICA:
+            return
+        try:
+            await self._notificacion_service.notificar_excursion_critica(
+                device_id=alerta.device_id,
+                temperatura=temperatura,
+                timestamp=_a_utc(timestamp).isoformat(),
+            )
+        except Exception:  # pragma: no cover - defensa: notificar nunca rompe la ingesta
+            logger.exception("Fallo al notificar la excursión crítica de %s", alerta.device_id)
 
     async def execute(
         self,
@@ -46,6 +84,7 @@ class GenerarAlertaUseCase:
         device_id: str,
         nivel_riesgo: NivelRiesgo | None,
         timestamp: datetime,
+        temperatura_interna: float | None = None,
     ) -> AlertaTermica | None:
         episodio_abierto = await self._alerta_repository.obtener_episodio_abierto(device_id)
 
@@ -71,7 +110,11 @@ class GenerarAlertaUseCase:
             and (_a_utc(timestamp) - _a_utc(ultimo_cerrado.cerrada_en)) <= timedelta(minutes=COOLDOWN_MINUTOS)
         ):
             ultimo_cerrado.reabrir(reading_id, timestamp)
-            return await self._alerta_repository.actualizar(ultimo_cerrado)
+            reabierta = await self._alerta_repository.actualizar(ultimo_cerrado)
+            await self._avisar_si_es_apertura_critica(
+                reabierta, episodio_abierto, temperatura_interna, timestamp
+            )
+            return reabierta
 
         alerta = AlertaTermica(
             reading_id=reading_id,
@@ -82,4 +125,8 @@ class GenerarAlertaUseCase:
             lectura_mas_reciente_id=reading_id,
             ultima_actualizacion=timestamp,
         )
-        return await self._alerta_repository.agregar(alerta)
+        creada = await self._alerta_repository.agregar(alerta)
+        await self._avisar_si_es_apertura_critica(
+            creada, episodio_abierto, temperatura_interna, timestamp
+        )
+        return creada

@@ -33,10 +33,15 @@ def _construir_use_case(session) -> RegistrarLecturaTermicaUseCase:
     )
 
 
+# Ver nota en test_ingesta_dedup_y_sensor_nulo: base relativa al reloj
+# actual para que la validación de timestamp (B-10) no invalide la prueba.
+_BASE = datetime.now(tz=timezone.utc).replace(second=0, microsecond=0) - timedelta(hours=2)
+
+
 def _lectura(minuto: int, **overrides) -> LecturaTermica:
     base = dict(
         device_id=DEVICE_ID,
-        timestamp=datetime(2026, 7, 22, 10, minuto, 0, tzinfo=timezone.utc),
+        timestamp=_BASE + timedelta(minutes=minuto),
         temperatura_ambiental=21.0,
         humedad_ambiental=55.0,
         temperatura_interna=15.0,  # fuera de rango BPA 2-8°C

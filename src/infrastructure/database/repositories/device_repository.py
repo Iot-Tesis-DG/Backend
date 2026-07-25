@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,10 @@ def _to_dict(model: DeviceModel) -> dict:
         "descripcion_baja": model.descripcion_baja,
         "dado_de_baja_en": model.dado_de_baja_en,
         "reemplaza_a_device_id": model.reemplaza_a_device_id,
+        "fecha_ultima_calibracion": model.fecha_ultima_calibracion,
+        "numero_certificado_calibracion": model.numero_certificado_calibracion,
+        "fecha_proxima_calibracion": model.fecha_proxima_calibracion,
+        "observaciones_calibracion": model.observaciones_calibracion,
     }
 
 
@@ -91,3 +95,45 @@ class SQLAlchemyDeviceRepository(IDeviceRepository):
             raise ValueError(f"Dispositivo {device_id} no encontrado")
         model.firmware_version = version
         await self._session.flush()
+
+    # ── HU-30: calibración de sensores ────────────────────────────────────
+    async def registrar_calibracion(
+        self,
+        device_id: str,
+        fecha_calibracion: date,
+        numero_certificado: str,
+        fecha_proxima: date,
+        observaciones: str | None,
+    ) -> dict:
+        model = await self._session.get(DeviceModel, device_id)
+        if model is None:
+            raise ValueError(f"Dispositivo {device_id} no encontrado")
+        model.fecha_ultima_calibracion = fecha_calibracion
+        model.numero_certificado_calibracion = numero_certificado
+        model.fecha_proxima_calibracion = fecha_proxima
+        model.observaciones_calibracion = observaciones
+        await self._session.flush()
+        return _to_dict(model)
+
+    async def listar_calibracion_vencida(self, hoy: date) -> list[dict]:
+        """Dispositivos activos cuyo certificado ya venció: sus lecturas dejan
+        de ser evidencia válida hasta que se recalibren."""
+        resultado = await self._session.execute(
+            select(DeviceModel).where(
+                DeviceModel.activo.is_(True),
+                DeviceModel.fecha_proxima_calibracion.is_not(None),
+                DeviceModel.fecha_proxima_calibracion < hoy,
+            )
+        )
+        return [_to_dict(m) for m in resultado.scalars().all()]
+
+    async def listar_calibracion_proxima(self, desde: date, hasta: date) -> list[dict]:
+        resultado = await self._session.execute(
+            select(DeviceModel).where(
+                DeviceModel.activo.is_(True),
+                DeviceModel.fecha_proxima_calibracion.is_not(None),
+                DeviceModel.fecha_proxima_calibracion >= desde,
+                DeviceModel.fecha_proxima_calibracion <= hasta,
+            )
+        )
+        return [_to_dict(m) for m in resultado.scalars().all()]

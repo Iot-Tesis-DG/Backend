@@ -38,9 +38,12 @@ def upgrade() -> None:
     op.add_column("users", sa.Column("desactivado_en", sa.DateTime(timezone=True), nullable=True))
     op.add_column("users", sa.Column("desactivado_por", sa.Uuid(as_uuid=True), nullable=True))
     op.add_column("users", sa.Column("anonymized_for_gdpr", sa.Boolean(), nullable=False, server_default=sa.false()))
-    op.create_foreign_key(
-        "fk_users_desactivado_por", "users", "users", ["desactivado_por"], ["id"],
-    )
+    # batch_alter_table: SQLite no soporta ALTER de restricciones. En
+    # PostgreSQL emite el mismo ALTER TABLE ... ADD CONSTRAINT.
+    with op.batch_alter_table("users") as batch:
+        batch.create_foreign_key(
+            "fk_users_desactivado_por", "users", ["desactivado_por"], ["id"]
+        )
 
     # HU-46: OTA de firmware (simulado a nivel de metadata; no hay firmware ni
     # ESP32 real en este repositorio — ver 08 del informe de cierre).
@@ -96,7 +99,8 @@ def downgrade() -> None:
     op.drop_column("traceability_records", "is_corrupted")
     op.drop_table("firmware_deployments")
     op.drop_table("firmware_releases")
-    op.drop_constraint("fk_users_desactivado_por", "users", type_="foreignkey")
+    with op.batch_alter_table("users") as batch:
+        batch.drop_constraint("fk_users_desactivado_por", type_="foreignkey")
     op.drop_column("users", "anonymized_for_gdpr")
     op.drop_column("users", "desactivado_por")
     op.drop_column("users", "desactivado_en")

@@ -1,12 +1,19 @@
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
 from src.domain.entities.lectura_termica import LecturaTermica
 from src.domain.exceptions import DispositivoNoAutorizadoError, LecturaInvalidaError
 from src.domain.repositories.i_alerta_repository import IAlertaRepository
+from src.domain.repositories.i_audit_log_repository import IAuditLogRepository
 from src.domain.repositories.i_device_repository import IDeviceRepository
 from src.domain.repositories.i_lectura_repository import ILecturaRepository
 from src.domain.repositories.i_trazabilidad_repository import ITrazabilidadRepository
 from src.application.use_cases.clasificar_riesgo_termico import ClasificarRiesgoTermicoUseCase
 from src.application.use_cases.generar_alerta import GenerarAlertaUseCase
 from src.application.use_cases.registrar_hash_encadenado import RegistrarHashEncadenadoUseCase
+
+if TYPE_CHECKING:
+    from src.infrastructure.notifications.notificacion_service import NotificacionService
 
 
 class RegistrarLecturaTermicaUseCase:
@@ -29,13 +36,16 @@ class RegistrarLecturaTermicaUseCase:
         clasificar_riesgo_use_case: ClasificarRiesgoTermicoUseCase,
         device_repository: IDeviceRepository | None = None,
         registro_dispositivos_estricto: bool = False,
+        audit_log_repository: IAuditLogRepository | None = None,
+        notificacion_service: "NotificacionService | None" = None,
     ) -> None:
         self._lectura_repository = lectura_repository
-        self._generar_alerta = GenerarAlertaUseCase(alerta_repository)
+        self._generar_alerta = GenerarAlertaUseCase(alerta_repository, notificacion_service)
         self._registrar_hash = RegistrarHashEncadenadoUseCase(trazabilidad_repository)
         self._clasificar_riesgo = clasificar_riesgo_use_case
         self._device_repository = device_repository
         self._estricto = registro_dispositivos_estricto
+        self._audit_log_repository = audit_log_repository
 
     async def _autorizar_dispositivo(self, device_id: str) -> None:
         if self._device_repository is None:
@@ -50,6 +60,26 @@ class RegistrarLecturaTermicaUseCase:
 
     async def execute(self, lectura: LecturaTermica) -> LecturaTermica:
         await self._autorizar_dispositivo(lectura.device_id)
+
+        # B-10: un instante implausible se rechaza ANTES de persistir. Aceptar
+        # timestamps futuros permitiría insertar registros que alteran el orden
+        # temporal de la evidencia térmica.
+        timestamp_valido, motivo = LecturaTermica.es_timestamp_valido(lectura.timestamp)
+        if not timestamp_valido:
+            if self._audit_log_repository is not None:
+                await self._audit_log_repository.registrar(
+                    usuario_id=None,
+                    accion="LECTURA_RECHAZADA_TIMESTAMP",
+                    recurso=f"lecturas/{lectura.device_id}",
+                    detalle={
+                        "motivo": motivo,
+                        "timestamp_recibido": lectura.timestamp.isoformat(),
+                        "servidor_utc": datetime.now(tz=timezone.utc).isoformat(),
+                    },
+                )
+            raise LecturaInvalidaError(
+                f"Timestamp rechazado para device {lectura.device_id}: {motivo}"
+            )
 
         if not lectura.es_lectura_valida():
             raise LecturaInvalidaError(
@@ -119,6 +149,7 @@ class RegistrarLecturaTermicaUseCase:
                 device_id=lectura_guardada.device_id,
                 nivel_riesgo=lectura_guardada.nivel_riesgo,
                 timestamp=lectura_guardada.timestamp,
+                temperatura_interna=lectura_guardada.temperatura_interna,
             )
             if alerta is not None:
                 await self._registrar_hash.execute(

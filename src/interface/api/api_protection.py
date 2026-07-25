@@ -1,10 +1,11 @@
 from collections.abc import Awaitable, Callable
 
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 
 from src.infrastructure.config import Settings
 from src.infrastructure.security.rate_limiter import SlidingWindowRateLimiter
+from src.interface.api.deps import CurrentUserDep, SettingsDep
 
 # Los probes de disponibilidad de la plataforma no consumen cuota.
 _RUTAS_EXENTAS = ("/health",)
@@ -76,6 +77,9 @@ def instalar_proteccion_api(app: FastAPI, settings: Settings) -> None:
         max_claves=settings.security_state_max_entries,
     )
     app.state.api_rate_limiter = limiter
+    # Cuotas por endpoint (ver `limitar_por_ip` / `limitar_por_usuario`), que se
+    # crean en la primera solicitud a cada ruta protegida.
+    app.state.limitadores_endpoint = {}
 
     @app.middleware("http")
     async def proteccion_api(
@@ -115,3 +119,96 @@ def instalar_proteccion_api(app: FastAPI, settings: Settings) -> None:
             limiter.registrar_fallo(ip)  # aquí cada solicitud cuenta para la ventana
 
         return await call_next(request)
+
+
+# ── Límites por endpoint (B13) ────────────────────────────────────────────
+#
+# El límite global por IP (240 req/min) absorbe scraping y flooding genéricos,
+# pero trata igual a un GET barato que a una verificación de cadena que recorre
+# todos los registros. Estos límites cubren el hueco.
+#
+# No ponen en riesgo el volcado del buffer del ESP32 (RNF-07, sincronización
+# ≤30 s tras reconectar): ese reenvío viaja por MQTT (RF-05/RF-06) y no
+# atraviesa la pila HTTP. El endpoint REST de ingesta es la vía secundaria.
+
+
+def _limitador(request: Request, settings: Settings, nombre: str, max_solicitudes: int,
+               ventana_segundos: int) -> SlidingWindowRateLimiter:
+    """Un limitador por endpoint, vivo en el estado de la app.
+
+    En `app.state` y no a nivel de módulo a propósito: cada instancia de la
+    aplicación (incluida cada prueba) arranca con la cuota limpia, y un límite
+    alcanzado en una prueba no puede filtrarse a la siguiente.
+    """
+    registro = request.app.state.limitadores_endpoint
+    limitador = registro.get(nombre)
+    if limitador is None:
+        limitador = SlidingWindowRateLimiter(
+            max_intentos=max_solicitudes,
+            ventana_segundos=ventana_segundos,
+            max_claves=settings.security_state_max_entries,
+        )
+        registro[nombre] = limitador
+    return limitador
+
+
+def _aplicar(request: Request, settings: Settings, nombre: str, clave: str,
+             max_solicitudes: int, ventana_segundos: int) -> None:
+    if not settings.api_rate_limit_habilitado:
+        return
+    limitador = _limitador(request, settings, nombre, max_solicitudes, ventana_segundos)
+    if limitador.bloqueado(clave):
+        # No se registra el intento bloqueado: contarlo extendería la espera en
+        # cada reintento y el cliente nunca saldría de la ventana.
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Demasiadas solicitudes a este recurso. Intenta nuevamente en unos segundos.",
+            headers={"Retry-After": str(limitador.segundos_para_reintentar(clave))},
+        )
+    limitador.registrar_fallo(clave)
+
+
+def limitar_por_ip(nombre: str, max_solicitudes: int, ventana_segundos: int):
+    """Dependencia de cuota por IP para un endpoint concreto."""
+
+    def dependencia(request: Request, settings: SettingsDep) -> None:
+        ip = request.client.host if request.client else "desconocida"
+        _aplicar(request, settings, nombre, ip, max_solicitudes, ventana_segundos)
+
+    return Depends(dependencia)
+
+
+def limitar_por_usuario(nombre: str, max_solicitudes: int, ventana_segundos: int):
+    """Cuota por usuario autenticado.
+
+    Para operaciones caras la IP es la clave equivocada: varios usuarios de la
+    misma farmacia comparten salida a internet y uno solo agotaría la cuota de
+    todos.
+    """
+
+    def dependencia(request: Request, settings: SettingsDep, usuario: CurrentUserDep) -> None:
+        _aplicar(request, settings, nombre, str(usuario.id), max_solicitudes, ventana_segundos)
+
+    return Depends(dependencia)
+
+
+def limitar_ingesta_lecturas():
+    """Cuota de la ingesta REST de lecturas, configurable por entorno.
+
+    A diferencia de las otras, sus valores salen de `Settings` y no de
+    constantes: el caudal aceptable depende del parque de dispositivos
+    desplegado, y ajustarlo no debería exigir tocar el código.
+    """
+
+    def dependencia(request: Request, settings: SettingsDep) -> None:
+        ip = request.client.host if request.client else "desconocida"
+        _aplicar(
+            request,
+            settings,
+            "lecturas_ingesta",
+            ip,
+            settings.ingesta_rate_limit_max_solicitudes,
+            settings.ingesta_rate_limit_ventana_segundos,
+        )
+
+    return Depends(dependencia)

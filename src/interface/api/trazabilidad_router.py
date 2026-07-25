@@ -10,6 +10,7 @@ from src.infrastructure.database.repositories.corrupcion_repository import SQLAl
 from src.infrastructure.database.repositories.trazabilidad_repository import (
     SQLAlchemyTrazabilidadRepository,
 )
+from src.interface.api.api_protection import limitar_por_usuario
 from src.interface.api.deps import DbSessionDep, require_roles
 from src.interface.api.mappers import trazabilidad_to_response
 from src.interface.api.schemas import (
@@ -38,7 +39,15 @@ async def listar_trazabilidad(
     return [trazabilidad_to_response(r) for r in registros]
 
 
-@router.get("/verificar", response_model=VerificacionIntegridadResponse)
+@router.get(
+    "/verificar",
+    response_model=VerificacionIntegridadResponse,
+    # B13: la verificación recorre y rehashea la cadena entera — es O(n) sobre
+    # una tabla que solo crece. Sin cuota propia, un usuario autenticado podría
+    # dejar la API sin CPU con un puñado de peticiones concurrentes. La clave es
+    # el usuario y no la IP: en una farmacia todos salen por la misma.
+    dependencies=[limitar_por_usuario("trazabilidad_verificar", 5, 60)],
+)
 async def verificar_integridad(
     session: DbSessionDep,
     _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO)),

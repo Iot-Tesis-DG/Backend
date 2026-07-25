@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import StrEnum
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -32,3 +33,30 @@ class LecturaPayload(BaseModel):
     )
     estado_conectividad: str = "online"
     firmware_version: str | None = None
+
+
+class TipoEventoDispositivo(StrEnum):
+    """B-09: eventos que el nodo publica en `farmacias/{device_id}/eventos`,
+    separados del flujo de lecturas."""
+
+    LWT_ONLINE = "lwt_online"
+    LWT_OFFLINE = "lwt_offline"
+    ERROR_SENSOR = "error_sensor"
+    FIRMWARE_UPDATE = "firmware_update"
+
+
+class EventoDispositivoPayload(BaseModel):
+    """Mensaje de estado del dispositivo (incluido el Last Will and Testament
+    que el broker publica cuando el ESP32 pierde la conexión sin despedirse).
+
+    Antes de este esquema, todo mensaje del tópico `/eventos` se validaba
+    contra `LecturaPayload`, fallaba y se descartaba en silencio: las
+    desconexiones del nodo nunca llegaban a registrarse."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    device_id: str = Field(min_length=1, max_length=50)
+    tipo_evento: TipoEventoDispositivo
+    timestamp: datetime
+    detalle: str | None = Field(default=None, max_length=500)
+    firmware_version: str | None = Field(default=None, max_length=20)

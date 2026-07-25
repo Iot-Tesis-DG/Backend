@@ -60,35 +60,36 @@ def upgrade() -> None:
         "WHERE lectura_inicial_id IS NULL"
     )
 
-    op.alter_column("thermal_alerts", "lectura_inicial_id", nullable=False)
-    op.alter_column("thermal_alerts", "lectura_mas_reciente_id", nullable=False)
-    op.alter_column("thermal_alerts", "ultima_actualizacion", nullable=False)
-
-    op.create_foreign_key(
-        "fk_thermal_alerts_lectura_inicial_id",
-        "thermal_alerts", "thermal_readings",
-        ["lectura_inicial_id"], ["id"],
-    )
-    op.create_foreign_key(
-        "fk_thermal_alerts_lectura_mas_reciente_id",
-        "thermal_alerts", "thermal_readings",
-        ["lectura_mas_reciente_id"], ["id"],
-    )
-
-    op.create_unique_constraint(
-        "uq_thermal_alerts_episodio_abierto_por_device_y_riesgo",
-        "thermal_alerts",
-        ["device_id", "nivel_riesgo", "episodio_abierto"],
-    )
+    # batch_alter_table: SQLite no soporta ALTER de columnas ni de
+    # restricciones; Alembic aplica su estrategia de copiar-y-mover. En
+    # PostgreSQL (motor de despliegue) emite exactamente los mismos ALTER.
+    with op.batch_alter_table("thermal_alerts") as batch:
+        batch.alter_column("lectura_inicial_id", nullable=False)
+        batch.alter_column("lectura_mas_reciente_id", nullable=False)
+        batch.alter_column("ultima_actualizacion", nullable=False)
+        batch.create_foreign_key(
+            "fk_thermal_alerts_lectura_inicial_id",
+            "thermal_readings",
+            ["lectura_inicial_id"], ["id"],
+        )
+        batch.create_foreign_key(
+            "fk_thermal_alerts_lectura_mas_reciente_id",
+            "thermal_readings",
+            ["lectura_mas_reciente_id"], ["id"],
+        )
+        batch.create_unique_constraint(
+            "uq_thermal_alerts_episodio_abierto_por_device_y_riesgo",
+            ["device_id", "nivel_riesgo", "episodio_abierto"],
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "uq_thermal_alerts_episodio_abierto_por_device_y_riesgo",
-        "thermal_alerts", type_="unique",
-    )
-    op.drop_constraint("fk_thermal_alerts_lectura_mas_reciente_id", "thermal_alerts", type_="foreignkey")
-    op.drop_constraint("fk_thermal_alerts_lectura_inicial_id", "thermal_alerts", type_="foreignkey")
+    with op.batch_alter_table("thermal_alerts") as batch:
+        batch.drop_constraint(
+            "uq_thermal_alerts_episodio_abierto_por_device_y_riesgo", type_="unique"
+        )
+        batch.drop_constraint("fk_thermal_alerts_lectura_mas_reciente_id", type_="foreignkey")
+        batch.drop_constraint("fk_thermal_alerts_lectura_inicial_id", type_="foreignkey")
     op.drop_column("thermal_alerts", "cerrada_en")
     op.drop_column("thermal_alerts", "ultima_actualizacion")
     op.drop_column("thermal_alerts", "lectura_mas_reciente_id")

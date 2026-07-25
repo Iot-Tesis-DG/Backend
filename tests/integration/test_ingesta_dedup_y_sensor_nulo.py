@@ -2,7 +2,7 @@
 lectura tratado incorrectamente como 0.0 °C) de la auditoría.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -32,10 +32,16 @@ def _construir_use_case(session) -> RegistrarLecturaTermicaUseCase:
     )
 
 
+# Anclado al reloj actual, no a una fecha fija: la ingesta rechaza
+# timestamps implausibles (B-10), así que una constante de calendario
+# haría que estas pruebas empezaran a fallar con el paso del tiempo.
+_BASE = datetime.now(tz=timezone.utc).replace(microsecond=0) - timedelta(hours=3)
+
+
 def _lectura(**overrides) -> LecturaTermica:
     base = dict(
         device_id=DEVICE_ID,
-        timestamp=datetime(2026, 7, 22, 10, 0, 0, tzinfo=timezone.utc),
+        timestamp=_BASE,
         temperatura_ambiental=21.0,
         humedad_ambiental=55.0,
         temperatura_interna=5.0,
@@ -97,7 +103,7 @@ async def test_sensor_temperatura_interna_none_no_se_convierte_en_cero(db_sessio
     async with db_session_factory() as session:
         use_case = _construir_use_case(session)
         lectura_guardada = await use_case.execute(
-            _lectura(timestamp=datetime(2026, 7, 22, 11, 0, 0, tzinfo=timezone.utc), temperatura_interna=None)
+            _lectura(timestamp=_BASE + timedelta(hours=1), temperatura_interna=None)
         )
         await session.commit()
 
@@ -123,7 +129,7 @@ async def test_sensor_temperatura_interna_presente_sigue_clasificando_normalment
     async with db_session_factory() as session:
         use_case = _construir_use_case(session)
         lectura_guardada = await use_case.execute(
-            _lectura(timestamp=datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc), temperatura_interna=5.0)
+            _lectura(timestamp=_BASE + timedelta(hours=2), temperatura_interna=5.0)
         )
         await session.commit()
 

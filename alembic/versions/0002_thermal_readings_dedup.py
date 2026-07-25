@@ -22,11 +22,16 @@ depends_on: Union[str, Sequence[str], None] = None
 CONSTRAINT_NAME = "uq_thermal_readings_device_timestamp"
 
 
+# `batch_alter_table` en vez de `create_unique_constraint` directo: SQLite no
+# soporta ALTER de restricciones, y Alembic necesita su estrategia de
+# copiar-y-mover. En PostgreSQL (el motor de despliegue) el resultado es el
+# mismo ALTER de siempre; en SQLite permite además verificar la cadena de
+# migraciones en las pruebas sin levantar un servidor de base de datos.
 def upgrade() -> None:
-    op.create_unique_constraint(
-        CONSTRAINT_NAME, "thermal_readings", ["device_id", "timestamp"]
-    )
+    with op.batch_alter_table("thermal_readings") as batch:
+        batch.create_unique_constraint(CONSTRAINT_NAME, ["device_id", "timestamp"])
 
 
 def downgrade() -> None:
-    op.drop_constraint(CONSTRAINT_NAME, "thermal_readings", type_="unique")
+    with op.batch_alter_table("thermal_readings") as batch:
+        batch.drop_constraint(CONSTRAINT_NAME, type_="unique")

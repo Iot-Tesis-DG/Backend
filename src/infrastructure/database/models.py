@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid, func
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -44,6 +44,14 @@ class DeviceModel(Base):
     descripcion_baja: Mapped[str | None] = mapped_column(Text, nullable=True)
     dado_de_baja_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reemplaza_a_device_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # HU-30: trazabilidad de calibración del sensor. Un registro térmico solo
+    # es evidencia válida ante inspección si el instrumento que lo produjo
+    # tenía certificado de calibración vigente en ese momento.
+    fecha_ultima_calibracion: Mapped[date | None] = mapped_column(Date, nullable=True)
+    numero_certificado_calibracion: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    fecha_proxima_calibracion: Mapped[date | None] = mapped_column(Date, nullable=True)
+    observaciones_calibracion: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     lecturas: Mapped[list["ThermalReadingModel"]] = relationship(back_populates="device")
 
@@ -250,6 +258,42 @@ class ForensicSnapshotModel(Base):
     )
     detalle: Mapped[dict] = mapped_column(JSONVariant, nullable=False)
     created_at: Mapped[datetime] = _created_at_column()
+
+
+class ChecklistBPAModel(Base):
+    """HU-37: verificación diaria de Buenas Prácticas de Almacenamiento.
+
+    UNIQUE(usuario_id, fecha): un checklist por usuario y día — volver a
+    guardar el mismo día actualiza la fila, y cada guardado deja además su
+    propio eslabón en `traceability_records` (la corrección queda auditable)."""
+
+    __tablename__ = "checklist_bpa"
+    __table_args__ = (
+        UniqueConstraint("usuario_id", "fecha", name="uq_checklist_bpa_usuario_fecha"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    usuario_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    fecha: Mapped[str] = mapped_column(String(10), nullable=False)  # "YYYY-MM-DD"
+
+    temperatura: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    termometro: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    registros: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    alertas_revisadas: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    acciones_documentadas: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    puerta: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    limpieza: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    exclusivo: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    rotulado: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    respaldo: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    observaciones: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = _created_at_column()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, server_default=func.now()
+    )
 
 
 class SystemStateModel(Base):

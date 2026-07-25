@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime, timezone
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
@@ -177,6 +177,11 @@ class DispositivoResponse(BaseModel):
     descripcion_baja: str | None = None
     dado_de_baja_en: datetime | None = None
     reemplaza_a_device_id: str | None = None
+    # HU-30: estado de calibración del sensor.
+    fecha_ultima_calibracion: date | None = None
+    numero_certificado_calibracion: str | None = None
+    fecha_proxima_calibracion: date | None = None
+    observaciones_calibracion: str | None = None
 
 
 class DispositivoBajaRequest(BaseModel):
@@ -213,6 +218,79 @@ class FirmwareDespliegueResponse(BaseModel):
     programado_para: datetime | None
     resultado: str | None
     completado_en: datetime | None
+
+
+class ChecklistBPARequest(BaseModel):
+    """HU-37: los diez ítems del Manual de Buenas Prácticas de Almacenamiento.
+
+    Todos son obligatorios: un checklist parcial no es evidencia de
+    cumplimiento, así que se rechaza en el borde de la API (422) antes de
+    llegar al dominio."""
+
+    fecha: str = Field(min_length=10, max_length=10)
+    temperatura: bool
+    termometro: bool
+    registros: bool
+    alertas_revisadas: bool
+    acciones_documentadas: bool
+    puerta: bool
+    limpieza: bool
+    exclusivo: bool
+    rotulado: bool
+    respaldo: bool
+    observaciones: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("fecha")
+    @classmethod
+    def _validar_formato_fecha(cls, valor: str) -> str:
+        try:
+            fecha = date.fromisoformat(valor)
+        except ValueError as exc:
+            raise ValueError("fecha debe tener formato YYYY-MM-DD") from exc
+        # Un checklist no puede declararse por adelantado: se firma el día que
+        # se realiza la verificación física del refrigerador.
+        if fecha > datetime.now(tz=timezone.utc).date():
+            raise ValueError("La fecha del checklist no puede ser futura")
+        return valor
+
+
+class ChecklistBPAResponse(BaseModel):
+    id: UUID
+    usuario_id: UUID
+    fecha: str
+    temperatura: bool
+    termometro: bool
+    registros: bool
+    alertas_revisadas: bool
+    acciones_documentadas: bool
+    puerta: bool
+    limpieza: bool
+    exclusivo: bool
+    rotulado: bool
+    respaldo: bool
+    observaciones: str | None
+    total_conformes: int
+    conforme: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class CalibracionRequest(BaseModel):
+    """HU-30: registro del certificado de calibración del sensor."""
+
+    fecha_calibracion: date
+    numero_certificado: str = Field(min_length=1, max_length=100)
+    observaciones: str | None = Field(default=None, max_length=2000)
+    # Periodicidad legal habitual del certificado; configurable por si el
+    # laboratorio emite uno con vigencia distinta.
+    meses_vigencia: int = Field(default=12, ge=1, le=60)
+
+    @field_validator("fecha_calibracion")
+    @classmethod
+    def _no_futura(cls, valor: date) -> date:
+        if valor > datetime.now(tz=timezone.utc).date():
+            raise ValueError("La fecha de calibración no puede ser futura")
+        return valor
 
 
 class AuditLogResponse(BaseModel):
