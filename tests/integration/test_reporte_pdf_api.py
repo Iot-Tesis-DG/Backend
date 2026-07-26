@@ -6,8 +6,6 @@ pruebas cubren tanto el formato como esa propiedad."""
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from tests.conftest import auth_header
 
 AHORA = datetime.now(tz=timezone.utc)

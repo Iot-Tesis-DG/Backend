@@ -1,7 +1,7 @@
 import math
-from numbers import Real
 from dataclasses import replace
 from datetime import datetime, timezone
+from numbers import Real
 
 import numpy as np
 
@@ -60,7 +60,7 @@ class ClasificarRiesgoTermicoUseCase:
     ) -> FeaturesRiesgoTermico:
         temperatura_interna = lectura.temperatura_interna or 0.0
 
-        historial_ordenado = sorted(historial, key=lambda l: _a_utc(l.timestamp))
+        historial_ordenado = sorted(historial, key=lambda lec: _a_utc(lec.timestamp))
         temperaturas_previas = [
             h.temperatura_interna for h in historial_ordenado if h.temperatura_interna is not None
         ]
@@ -134,7 +134,7 @@ class ClasificarRiesgoTermicoUseCase:
                 estado_inferencia=ESTADO_OMITIDA, motivo_no_inferencia="sensor_ambiental_valor_no_finito",
             )
 
-        historial_ordenado = sorted(historial, key=lambda l: _a_utc(l.timestamp))
+        historial_ordenado = sorted(historial, key=lambda lec: _a_utc(lec.timestamp))
 
         if ambiental is None:
             # Solo un sensor válido (el crítico): se aplica el fallback

@@ -1,11 +1,15 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
+from src.application.use_cases.auditar_accion_critica import AuditarAccionCriticaUseCase
 from src.application.use_cases.gestionar_corrupcion_cadena import AislarCorrupcionUseCase
 from src.application.use_cases.registrar_hash_encadenado import RegistrarHashEncadenadoUseCase
 from src.application.use_cases.verificar_integridad_registro import VerificarIntegridadRegistroUseCase
 from src.domain.value_objects.rol import Rol
+from src.infrastructure.database.repositories.audit_log_repository import (
+    SQLAlchemyAuditLogRepository,
+)
 from src.infrastructure.database.repositories.corrupcion_repository import SQLAlchemyCorrupcionRepository
 from src.infrastructure.database.repositories.trazabilidad_repository import (
     SQLAlchemyTrazabilidadRepository,
@@ -92,7 +96,8 @@ async def obtener_estado_cadena(
 async def aislar_corrupcion(
     registro_id: UUID,
     session: DbSessionDep,
-    _admin=Depends(require_roles(Rol.ADMINISTRADOR)),
+    request: Request,
+    admin=Depends(require_roles(Rol.ADMINISTRADOR)),
 ) -> None:
     """HU-47 Escenario 4, Opción 2 (Quarantine)."""
     repositorio = SQLAlchemyTrazabilidadRepository(session)
@@ -101,5 +106,17 @@ async def aislar_corrupcion(
         SQLAlchemyCorrupcionRepository(session),
         RegistrarHashEncadenadoUseCase(repositorio),
     )
-    await use_case.execute(registro_id)
+    await use_case.execute(registro_id, usuario_id=admin.id)
+
+    # RF-16: dar por rota la evidencia y arrancar una cadena nueva es la
+    # intervención manual más sensible del sistema. Antes solo dejaba rastro en
+    # la propia cadena y sin autor, así que la bitácora no podía responder
+    # quién puso la evidencia en cuarentena ni desde dónde.
+    await AuditarAccionCriticaUseCase(SQLAlchemyAuditLogRepository(session)).execute(
+        usuario_id=admin.id,
+        accion="CADENA_CORRUPCION_AISLADA",
+        recurso=f"trazabilidad/corrupcion/{registro_id}",
+        detalle={"registro_corrupto_id": str(registro_id)},
+        ip_origen=request.client.host if request.client else "desconocida",
+    )
     await session.commit()

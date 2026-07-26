@@ -5,7 +5,6 @@ que lo produjo tenía certificado vigente; estas pruebas cubren ese vínculo."""
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
 import pytest_asyncio
 
 from src.infrastructure.database.repositories.device_repository import SQLAlchemyDeviceRepository

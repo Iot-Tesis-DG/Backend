@@ -17,6 +17,18 @@ def _estado_sensor(valor: object | None, minimo: float, maximo: float) -> str:
     return "valido"
 
 
+def evidencia_edge(
+    *, firmware_version: str | None, duracion_apertura_segundos: int
+) -> dict[str, object]:
+    """Campos que el nodo edge reporta pero que no tienen columna propia en
+    `thermal_readings`. Se guardan en la columna JSONB `payload` (HU-22) para
+    que la evidencia no se pierda: antes se validaban y se descartaban."""
+    return {
+        "firmware_version": firmware_version,
+        "duracion_apertura_segundos": duracion_apertura_segundos,
+    }
+
+
 def lectura_to_response(lectura: LecturaTermica) -> LecturaResponse:
     return LecturaResponse(
         id=lectura.id,

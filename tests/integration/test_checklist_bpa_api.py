@@ -3,8 +3,6 @@ y cada guardado deja un eslabón verificable en la cadena SHA-256."""
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from tests.conftest import auth_header
 
 HOY = datetime.now(tz=timezone.utc).date().isoformat()

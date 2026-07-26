@@ -4,18 +4,18 @@ from src.infrastructure.ai.reglas_riesgo import clasificar_por_regla
 
 
 def _features(**overrides) -> FeaturesRiesgoTermico:
-    base = dict(
-        temperatura_ambiental=6.0,
-        humedad_ambiental=55.0,
-        temperatura_interna=5.0,
-        diferencia_sensores=1.0,
-        duracion_fuera_rango=0.0,
-        frecuencia_desviaciones=0.0,
-        tendencia_termica=0.0,
-        apertura_refrigerador=False,
-        hora_evento=12,
-        estado_conectividad_online=True,
-    )
+    base = {
+        "temperatura_ambiental": 6.0,
+        "humedad_ambiental": 55.0,
+        "temperatura_interna": 5.0,
+        "diferencia_sensores": 1.0,
+        "duracion_fuera_rango": 0.0,
+        "frecuencia_desviaciones": 0.0,
+        "tendencia_termica": 0.0,
+        "apertura_refrigerador": False,
+        "hora_evento": 12,
+        "estado_conectividad_online": True,
+    }
     base.update(overrides)
     return FeaturesRiesgoTermico(**base)
 

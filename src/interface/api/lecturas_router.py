@@ -20,7 +20,7 @@ from src.infrastructure.database.repositories.trazabilidad_repository import (
 from src.infrastructure.notifications.notificacion_service import NotificacionService
 from src.interface.api.api_protection import limitar_ingesta_lecturas
 from src.interface.api.deps import DbSessionDep, SettingsDep, require_roles
-from src.interface.api.mappers import lectura_to_response
+from src.interface.api.mappers import evidencia_edge, lectura_to_response
 from src.interface.api.schemas import LecturaIngestRequest, LecturaResponse
 
 router = APIRouter(prefix="/api/lecturas", tags=["lecturas"])
@@ -65,6 +65,10 @@ async def ingestar_lectura(
         temperatura_interna=body.temperatura_interna,
         apertura_refrigerador=body.apertura_refrigerador,
         estado_conectividad=body.estado_conectividad,
+        payload=evidencia_edge(
+            firmware_version=body.firmware_version,
+            duracion_apertura_segundos=body.duracion_apertura_segundos,
+        ),
     )
     episodio_previo = await alerta_repository.obtener_episodio_abierto(body.device_id)
     try:

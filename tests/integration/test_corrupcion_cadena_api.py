@@ -104,6 +104,40 @@ async def test_admin_aisla_registro_corrupto_y_restaura_estado(client, token_adm
     assert estado.json()["cadena_comprometida"] is False
 
 
+async def test_aislamiento_queda_en_la_bitacora_con_su_autor(
+    client, token_admin, token_tecnico, db_session_factory
+):
+    """RF-16: dar por rota la evidencia y arrancar una cadena nueva es la
+    intervención manual más sensible del sistema.
+
+    Antes solo dejaba rastro dentro de la propia cadena y sin autor, así que la
+    bitácora no podía responder quién puso la evidencia en cuarentena — justo
+    la pregunta que haría cualquier auditoría."""
+    from src.infrastructure.database.repositories.audit_log_repository import (
+        SQLAlchemyAuditLogRepository,
+    )
+
+    _ingestar_lectura(client, token_tecnico, "esp32-corrupto-07")
+    registro_id = await _corromper_primer_registro(db_session_factory)
+    client.get("/api/trazabilidad/verificar", headers=auth_header(token_tecnico))
+
+    assert (
+        client.post(
+            f"/api/trazabilidad/corrupcion/{registro_id}/aislar",
+            headers=auth_header(token_admin),
+        ).status_code
+        == 204
+    )
+
+    async with db_session_factory() as session:
+        entradas = await SQLAlchemyAuditLogRepository(session).listar(limite=100)
+
+    aislamientos = [e for e in entradas if e["accion"] == "CADENA_CORRUPCION_AISLADA"]
+    assert len(aislamientos) == 1, "el aislamiento no quedó registrado en audit_logs"
+    assert aislamientos[0]["usuario_id"] is not None, "no consta quién ordenó la cuarentena"
+    assert aislamientos[0]["detalle"]["registro_corrupto_id"] == registro_id
+
+
 async def test_tecnico_no_puede_aislar_corrupcion(client, token_tecnico, db_session_factory):
     _ingestar_lectura(client, token_tecnico, "esp32-corrupto-05")
     registro_id = await _corromper_primer_registro(db_session_factory)

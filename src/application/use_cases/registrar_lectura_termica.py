@@ -1,6 +1,9 @@
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from src.application.use_cases.clasificar_riesgo_termico import ClasificarRiesgoTermicoUseCase
+from src.application.use_cases.generar_alerta import GenerarAlertaUseCase
+from src.application.use_cases.registrar_hash_encadenado import RegistrarHashEncadenadoUseCase
 from src.domain.entities.lectura_termica import LecturaTermica
 from src.domain.exceptions import DispositivoNoAutorizadoError, LecturaInvalidaError
 from src.domain.repositories.i_alerta_repository import IAlertaRepository
@@ -8,9 +11,6 @@ from src.domain.repositories.i_audit_log_repository import IAuditLogRepository
 from src.domain.repositories.i_device_repository import IDeviceRepository
 from src.domain.repositories.i_lectura_repository import ILecturaRepository
 from src.domain.repositories.i_trazabilidad_repository import ITrazabilidadRepository
-from src.application.use_cases.clasificar_riesgo_termico import ClasificarRiesgoTermicoUseCase
-from src.application.use_cases.generar_alerta import GenerarAlertaUseCase
-from src.application.use_cases.registrar_hash_encadenado import RegistrarHashEncadenadoUseCase
 
 if TYPE_CHECKING:
     from src.infrastructure.notifications.notificacion_service import NotificacionService

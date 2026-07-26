@@ -36,6 +36,8 @@ BASE_URL_DEFAULT = os.getenv("SIMULADOR_BASE_URL", "http://localhost:8000")
 EMAIL_DEFAULT = os.getenv("SIMULADOR_EMAIL", "tecnico@farmacia.demo.pe")
 PASSWORD_DEFAULT = os.getenv("SIMULADOR_PASSWORD", "tecni12345")
 DEVICE_ID_DEFAULT = os.getenv("SIMULADOR_DEVICE_ID", "ESP32-001")
+# Debe coincidir con FIRMWARE_VERSION de iot-firmware/src/config.h.
+FIRMWARE_VERSION_SIMULADA = os.getenv("SIMULADOR_FIRMWARE_VERSION", "1.0.0")
 
 # Rango normal de cadena de frío farmacéutica: 2°C a 8°C.
 TEMP_NORMAL_MIN = 2.0
@@ -62,14 +64,28 @@ def _generar_lectura(device_id: str, forzar_alerta: bool) -> dict:
     humedad = round(random.uniform(HUMEDAD_MIN, HUMEDAD_MAX), 2)
     apertura = random.random() < 0.05  # 5% de probabilidad de puerta abierta
 
+    # Mismos campos, mismo orden y mismos tipos que `PayloadBuilder::build()`
+    # del firmware (ver IoT-documentacion_iot.md §3.5).
+    #
+    # Antes se omitían `firmware_version` y `duracion_apertura_segundos`, así
+    # que este "simulador de ESP32" enviaba un payload que el ESP32 real nunca
+    # produce. Por eso el contrato pudo romperse sin que nada lo delatara: el
+    # backend rechazaba el 100% de las lecturas del nodo físico mientras el
+    # simulador seguía en verde. Si el firmware cambia de forma, esto debe
+    # cambiar con él.
     return {
         "device_id": device_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "estado_conectividad": "online",
+        "firmware_version": FIRMWARE_VERSION_SIMULADA,
+        "temperatura_interna": temp_interna,
         "temperatura_ambiental": temp_ambiental,
         "humedad_ambiental": humedad,
-        "temperatura_interna": temp_interna,
         "apertura_refrigerador": apertura,
-        "estado_conectividad": "online",
+        # El nodo lo emite siempre: 0 con la puerta cerrada.
+        "duracion_apertura_segundos": random.randint(30, 300) if apertura else 0,
     }
 
 
@@ -97,7 +113,7 @@ async def _enviar_lectura(client: httpx.AsyncClient, base_url: str, token: str, 
 
 async def ejecutar(args: argparse.Namespace) -> int:
     base_url = args.base_url.rstrip("/")
-    print(f"── Simulador ESP32 ──────────────────────────────")
+    print("── Simulador ESP32 ──────────────────────────────")
     print(f"Backend:    {base_url}")
     print(f"Device ID:  {args.device_id}")
     print(f"Intervalo:  {args.intervalo}s")

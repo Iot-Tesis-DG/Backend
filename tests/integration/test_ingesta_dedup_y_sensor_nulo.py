@@ -39,15 +39,15 @@ _BASE = datetime.now(tz=timezone.utc).replace(microsecond=0) - timedelta(hours=3
 
 
 def _lectura(**overrides) -> LecturaTermica:
-    base = dict(
-        device_id=DEVICE_ID,
-        timestamp=_BASE,
-        temperatura_ambiental=21.0,
-        humedad_ambiental=55.0,
-        temperatura_interna=5.0,
-        apertura_refrigerador=False,
-        estado_conectividad="online",
-    )
+    base = {
+        "device_id": DEVICE_ID,
+        "timestamp": _BASE,
+        "temperatura_ambiental": 21.0,
+        "humedad_ambiental": 55.0,
+        "temperatura_interna": 5.0,
+        "apertura_refrigerador": False,
+        "estado_conectividad": "online",
+    }
     base.update(overrides)
     return LecturaTermica(**base)
 

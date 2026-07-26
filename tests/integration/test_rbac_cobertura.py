@@ -14,6 +14,11 @@ from tests.conftest import auth_header
 PUBLICOS = {
     ("GET", "/health"): "probe de la plataforma; no expone datos del negocio",
     ("POST", "/api/auth/login"): "punto de entrada de la autenticación",
+    # Público por la misma razón que /login: es el punto de entrada. La
+    # autorización no desaparece, se desplaza — el ID token de Google se
+    # verifica contra el JWKS de Google y el correo debe existir y estar activo
+    # en `users`. Cubierto por tests/integration/test_auth_google_api.py.
+    ("POST", "/api/auth/google"): "punto de entrada de la autenticación con Google",
     ("GET", "/openapi.json"): "solo se sirve fuera de producción",
     ("GET", "/docs"): "solo se sirve fuera de producción",
     ("GET", "/docs/oauth2-redirect"): "solo se sirve fuera de producción",

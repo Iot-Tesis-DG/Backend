@@ -29,7 +29,7 @@ class AislarCorrupcionUseCase:
         self._corrupcion_repository = corrupcion_repository
         self._registrar_hash = registrar_hash
 
-    async def execute(self, registro_corrupto_id: UUID) -> None:
+    async def execute(self, registro_corrupto_id: UUID, usuario_id: UUID | None = None) -> None:
         registros = await self._trazabilidad_repository.listar_todos_ordenados()
         ids_posteriores: list[UUID] = []
         encontrado = False
@@ -51,6 +51,11 @@ class AislarCorrupcionUseCase:
             payload={
                 "registro_corrupto_id": str(registro_corrupto_id),
                 "registros_afectados": len(ids_posteriores),
+                # Quién ordenó la cuarentena. Sin este dato, el bloque génesis
+                # de la cadena nueva no dice de quién fue la decisión de dar
+                # por rota la evidencia anterior — que es la intervención
+                # manual más sensible de todo el sistema.
+                "aislado_por": str(usuario_id) if usuario_id else None,
             },
             timestamp=datetime.now(tz=timezone.utc),
             previous_hash_forzado=GENESIS_HASH,

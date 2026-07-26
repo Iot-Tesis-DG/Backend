@@ -27,16 +27,16 @@ from src.infrastructure.database.repositories.trazabilidad_repository import (
 )
 from src.infrastructure.database.session import _session_factory
 from src.infrastructure.mqtt.mqtt_client import mqtt_session
-from src.infrastructure.notifications.notificacion_service import NotificacionService
 from src.infrastructure.mqtt.payload_schema import (
     EventoDispositivoPayload,
     LecturaPayload,
     TipoEventoDispositivo,
 )
+from src.infrastructure.notifications.notificacion_service import NotificacionService
 from src.infrastructure.security.rate_limiter import SlidingWindowRateLimiter
 from src.infrastructure.security.revocation_store import JtiStore
-from src.interface.api.api_protection import instalar_proteccion_api
 from src.interface.api.alertas_router import router as alertas_router
+from src.interface.api.api_protection import instalar_proteccion_api
 from src.interface.api.auditoria_router import router as auditoria_router
 from src.interface.api.auth_router import router as auth_router
 from src.interface.api.checklist_router import router as checklist_router
@@ -44,10 +44,10 @@ from src.interface.api.dispositivos_router import router as dispositivos_router
 from src.interface.api.firmware_router import router as firmware_router
 from src.interface.api.ia_router import router as ia_router
 from src.interface.api.lecturas_router import router as lecturas_router
-from src.interface.api.mappers import lectura_to_response
+from src.interface.api.mappers import evidencia_edge, lectura_to_response
 from src.interface.api.reportes_router import router as reportes_router
-from src.interface.api.sse_broadcaster import SSEBroadcaster
 from src.interface.api.security_headers import instalar_security_headers
+from src.interface.api.sse_broadcaster import SSEBroadcaster
 from src.interface.api.sse_router import router as sse_router
 from src.interface.api.trazabilidad_router import router as trazabilidad_router
 from src.interface.api.usuarios_router import router as usuarios_router
@@ -192,6 +192,10 @@ async def _procesar_lectura_mqtt(message: aiomqtt.Message, broadcaster: SSEBroad
             temperatura_interna=payload.temperatura_interna,
             apertura_refrigerador=payload.apertura_refrigerador,
             estado_conectividad=payload.estado_conectividad,
+            payload=evidencia_edge(
+                firmware_version=payload.firmware_version,
+                duracion_apertura_segundos=payload.duracion_apertura_segundos,
+            ),
         )
         # Reenvío QoS1: no publicar un segundo SSE lógico. El caso de uso
         # conserva misma garantía en BD; este guard evita notificación doble.

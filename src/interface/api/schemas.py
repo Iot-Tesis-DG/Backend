@@ -14,6 +14,16 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=8)
 
 
+class LoginGoogleRequest(BaseModel):
+    """ID token que devuelve Google Identity Services en el navegador.
+
+    El límite de 4096 evita que el endpoint acepte cuerpos arbitrariamente
+    grandes antes siquiera de intentar verificar la firma; un ID token real
+    ronda el kilobyte."""
+
+    id_token: str = Field(min_length=1, max_length=4096)
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -69,6 +79,8 @@ class LecturaIngestRequest(BaseModel):
     temperatura_interna: float | None = Field(default=None, ge=-55.0, le=125.0)
     apertura_refrigerador: bool = False
     estado_conectividad: str = "online"
+    firmware_version: str | None = None
+    duracion_apertura_segundos: int = Field(default=0, ge=0)
 
 
 class LecturaResponse(BaseModel):

@@ -1,15 +1,14 @@
 """Controles de seguridad transversales: headers, rate limiting, SSE y política de contraseñas."""
 
-import jwt as pyjwt
 from datetime import datetime, timezone
 
+import jwt as pyjwt
 import pytest
 
 from src.domain.value_objects.rol import Rol
 from src.infrastructure.config import Settings
 from src.infrastructure.security.jwt_handler import JWTHandler
 from tests.conftest import auth_header
-
 
 # ── Security headers ─────────────────────────────────────────────
 

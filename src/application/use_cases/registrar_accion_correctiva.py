@@ -1,11 +1,11 @@
 from uuid import UUID
 
+from src.application.use_cases.registrar_hash_encadenado import RegistrarHashEncadenadoUseCase
 from src.domain.entities.accion_correctiva import AccionCorrectiva
 from src.domain.exceptions import RecursoNoEncontradoError
 from src.domain.repositories.i_accion_correctiva_repository import IAccionCorrectivaRepository
 from src.domain.repositories.i_alerta_repository import IAlertaRepository
 from src.domain.repositories.i_trazabilidad_repository import ITrazabilidadRepository
-from src.application.use_cases.registrar_hash_encadenado import RegistrarHashEncadenadoUseCase
 
 
 class RegistrarAccionCorrectivaUseCase:

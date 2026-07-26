@@ -6,6 +6,7 @@ from src.domain.entities.registro_trazabilidad import RegistroTrazabilidad
 from src.domain.repositories.i_trazabilidad_repository import ITrazabilidadRepository
 from src.domain.value_objects.hash_encadenado import HashEncadenado, timestamp_canonico
 
+
 # Estrategia de cadena: GLOBAL (una única cadena para todo el sistema, no
 # separada por dispositivo ni por farmacia). Decisión de diseño explícita,
 # coherente con el alcance de la tesis (un solo escenario de validación).

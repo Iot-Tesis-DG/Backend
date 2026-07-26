@@ -106,15 +106,15 @@ class ExportarReporteBPAPDFUseCase:
         pdf_bytes = self._generador.generar(
             lecturas=[
                 {
-                    "timestamp": l.timestamp,
-                    "temperatura_interna": l.temperatura_interna,
-                    "temperatura_ambiental": l.temperatura_ambiental,
-                    "humedad_ambiental": l.humedad_ambiental,
-                    "apertura_refrigerador": l.apertura_refrigerador,
-                    "nivel_riesgo": l.nivel_riesgo.value if l.nivel_riesgo is not None else None,
-                    "confianza_ia": l.confianza_ia,
+                    "timestamp": lectura.timestamp,
+                    "temperatura_interna": lectura.temperatura_interna,
+                    "temperatura_ambiental": lectura.temperatura_ambiental,
+                    "humedad_ambiental": lectura.humedad_ambiental,
+                    "apertura_refrigerador": lectura.apertura_refrigerador,
+                    "nivel_riesgo": lectura.nivel_riesgo.value if lectura.nivel_riesgo is not None else None,
+                    "confianza_ia": lectura.confianza_ia,
                 }
-                for l in lecturas
+                for lectura in lecturas
             ],
             alertas=[
                 {

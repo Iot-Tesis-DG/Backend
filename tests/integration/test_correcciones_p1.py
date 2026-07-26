@@ -5,6 +5,7 @@
 import math
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from sqlalchemy import select
 
 from src.application.use_cases.clasificar_riesgo_termico import ClasificarRiesgoTermicoUseCase
@@ -39,15 +40,15 @@ _BASE = datetime.now(tz=timezone.utc).replace(second=0, microsecond=0) - timedel
 
 
 def _lectura(minuto: int, **overrides) -> LecturaTermica:
-    base = dict(
-        device_id=DEVICE_ID,
-        timestamp=_BASE + timedelta(minutes=minuto),
-        temperatura_ambiental=21.0,
-        humedad_ambiental=55.0,
-        temperatura_interna=15.0,  # fuera de rango BPA 2-8°C
-        apertura_refrigerador=False,
-        estado_conectividad="online",
-    )
+    base = {
+        "device_id": DEVICE_ID,
+        "timestamp": _BASE + timedelta(minutes=minuto),
+        "temperatura_ambiental": 21.0,
+        "humedad_ambiental": 55.0,
+        "temperatura_interna": 15.0,  # fuera de rango BPA 2-8°C
+        "apertura_refrigerador": False,
+        "estado_conectividad": "online",
+    }
     base.update(overrides)
     return LecturaTermica(**base)
 
@@ -211,11 +212,11 @@ async def test_temperatura_interna_nan_es_rechazada_como_lectura_invalida(db_ses
 
     async with db_session_factory() as session:
         use_case = _construir_use_case(session)
-        try:
+        # `pytest.raises` en vez de try/except con `assert False`: bajo
+        # `python -O` los assert desaparecen y la prueba pasaría aunque la
+        # lectura inválida se aceptara sin error.
+        with pytest.raises(LecturaInvalidaError):
             await use_case.execute(_lectura(0, temperatura_interna=math.nan))
-            assert False, "Se esperaba LecturaInvalidaError para temperatura_interna=NaN"
-        except LecturaInvalidaError:
-            pass
 
 
 async def test_temperatura_interna_infinito_es_rechazada_como_lectura_invalida(db_session_factory):
@@ -223,11 +224,11 @@ async def test_temperatura_interna_infinito_es_rechazada_como_lectura_invalida(d
 
     async with db_session_factory() as session:
         use_case = _construir_use_case(session)
-        try:
+        # `pytest.raises` en vez de try/except con `assert False`: bajo
+        # `python -O` los assert desaparecen y la prueba pasaría aunque la
+        # lectura inválida se aceptara sin error.
+        with pytest.raises(LecturaInvalidaError):
             await use_case.execute(_lectura(0, temperatura_interna=math.inf))
-            assert False, "Se esperaba LecturaInvalidaError para temperatura_interna=inf"
-        except LecturaInvalidaError:
-            pass
 
 
 def test_guard_de_clasificacion_bloquea_nan_e_infinito_como_defensa_en_profundidad():

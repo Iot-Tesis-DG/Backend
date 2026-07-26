@@ -5,9 +5,9 @@ from .rol import Rol
 
 __all__ = [
     "GENESIS_HASH",
+    "RANGO_TERMICO_BPA",
     "HashEncadenado",
     "NivelRiesgo",
-    "RANGO_TERMICO_BPA",
     "RangoTermico",
     "Rol",
 ]

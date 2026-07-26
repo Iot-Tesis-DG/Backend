@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     # Hosts permitidos en producción (mitiga ataques por header Host).
     allowed_hosts: list[str] = []
 
+    # Acceso con Google (RF-17, método alternativo).
+    #
+    # Google verifica la IDENTIDAD; la AUTORIZACIÓN sigue siendo la tabla
+    # `users`: solo entran correos que un administrador dio de alta, y el rol
+    # sale de la base de datos. Deshabilitado por defecto: sin `client_id` no
+    # hay forma de comprobar que un ID token fue emitido para esta aplicación
+    # y no para cualquier otra de las que usan Google.
+    google_oauth_enabled: bool = False
+    google_client_id: str = ""
+
     password_min_length: int = 10
 
     # HU-23: aviso fuera de la aplicación ante excursión crítica. Ambos canales
@@ -108,6 +118,14 @@ class Settings(BaseSettings):
                 not origen.startswith("https://") for origen in self.cors_origins
             ):
                 raise ValueError("CORS_ORIGINS debe declarar únicamente orígenes HTTPS en producción.")
+            # Habilitar el acceso con Google sin client_id dejaría el endpoint
+            # publicado sin poder validar `aud`: aceptaría ID tokens emitidos
+            # para cualquier otra aplicación de Google.
+            if self.google_oauth_enabled and not self.google_client_id:
+                raise ValueError(
+                    "GOOGLE_OAUTH_ENABLED requiere GOOGLE_CLIENT_ID (sin él no se "
+                    "puede validar la audiencia del ID token)."
+                )
             if self.mqtt_enabled:
                 # RNF-05: transmisión sobre TLS y credenciales fuera del código fuente.
                 if not self.mqtt_tls_enabled:

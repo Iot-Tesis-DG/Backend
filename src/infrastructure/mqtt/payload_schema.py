@@ -33,6 +33,11 @@ class LecturaPayload(BaseModel):
     )
     estado_conectividad: str = "online"
     firmware_version: str | None = None
+    # HU-04: el nodo acompaña cada apertura de puerta con su duración
+    # acumulada. `PayloadBuilder::build()` lo emite SIEMPRE (0 con la puerta
+    # cerrada), así que sin este campo `extra="forbid"` rechazaba el 100% de
+    # las lecturas del firmware real. Ver IoT-documentacion_iot.md §3.5.
+    duracion_apertura_segundos: int = Field(default=0, ge=0)
 
 
 class TipoEventoDispositivo(StrEnum):

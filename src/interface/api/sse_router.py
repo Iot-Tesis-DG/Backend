@@ -23,7 +23,7 @@ async def _event_stream(request: Request) -> AsyncGenerator[str, None]:
             try:
                 mensaje = await asyncio.wait_for(queue.get(), timeout=15.0)
                 yield f"{mensaje}\n\n"
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 yield ": keep-alive\n\n"
     finally:
         broadcaster.unsubscribe(queue)

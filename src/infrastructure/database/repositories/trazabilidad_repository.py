@@ -57,15 +57,33 @@ class SQLAlchemyTrazabilidadRepository(ITrazabilidadRepository):
                 text("SELECT pg_advisory_xact_lock(:clave)"),
                 {"clave": _CLAVE_CANDADO_CADENA_HASH},
             )
+        # Desempate por `id` además de `created_at`.
+        #
+        # `created_at` se genera en Python con resolución de microsegundos, así
+        # que un empate es improbable — pero no imposible. Y si ocurriera, lo
+        # grave no es el empate en sí: es que ESTA consulta (camino de
+        # escritura, DESC) y `listar_todos_ordenados()` (camino de
+        # verificación, ASC) podrían resolverlo en sentidos distintos. La
+        # cadena se habría escrito en un orden y se verificaría en otro,
+        # denunciando una corrupción inexistente sobre evidencia intacta.
+        #
+        # `id` es un UUID4, no monótono: no aporta orden cronológico. Aporta lo
+        # único que hace falta aquí, que es que ambos caminos desempaten igual.
         stmt = select(TraceabilityRecordModel.hash_actual).order_by(
-            TraceabilityRecordModel.created_at.desc()
+            TraceabilityRecordModel.created_at.desc(),
+            TraceabilityRecordModel.id.desc(),
         ).limit(1)
         result = await self._session.execute(stmt)
         hash_actual = result.scalar_one_or_none()
         return hash_actual or GENESIS_HASH
 
     async def listar_todos_ordenados(self) -> list[RegistroTrazabilidad]:
-        stmt = select(TraceabilityRecordModel).order_by(TraceabilityRecordModel.created_at.asc())
+        # Mismo criterio de desempate que `obtener_ultimo_hash()`, en sentido
+        # inverso: los dos caminos deben recorrer la cadena en el mismo orden.
+        stmt = select(TraceabilityRecordModel).order_by(
+            TraceabilityRecordModel.created_at.asc(),
+            TraceabilityRecordModel.id.asc(),
+        )
         result = await self._session.execute(stmt)
         return [_to_entity(m) for m in result.scalars().all()]
 

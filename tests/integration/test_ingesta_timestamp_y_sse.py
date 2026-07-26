@@ -7,8 +7,6 @@ no una validación de formato."""
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from src.domain.entities.lectura_termica import LecturaTermica
 from tests.conftest import auth_header
 
@@ -102,7 +100,7 @@ def test_lectura_rechazada_no_se_persiste_ni_encadena(client, token_tecnico, tok
     assert respuesta.status_code == 422
 
     lecturas = client.get("/api/lecturas", headers=auth_header(token_tecnico)).json()
-    assert not any(l["device_id"] == "ESP32-TS-01" for l in lecturas)
+    assert not any(lec["device_id"] == "ESP32-TS-01" for lec in lecturas)
 
     registros = client.get("/api/trazabilidad", headers=auth_header(token_admin)).json()
     assert not any(r.get("device_id") == "ESP32-TS-01" for r in registros)

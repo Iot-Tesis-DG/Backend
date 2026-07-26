@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 
 from src.application.use_cases.auditar_accion_critica import AuditarAccionCriticaUseCase
+from src.application.use_cases.autenticar_con_google import AutenticarConGoogleUseCase
 from src.application.use_cases.autenticar_usuario import AutenticarUsuarioUseCase
 from src.application.use_cases.gestionar_privacidad import (
     AceptarPrivacidadUseCase,
@@ -18,8 +19,21 @@ from src.infrastructure.database.repositories.trazabilidad_repository import (
     SQLAlchemyTrazabilidadRepository,
 )
 from src.infrastructure.database.repositories.usuario_repository import SQLAlchemyUsuarioRepository
-from src.interface.api.deps import CurrentUserDep, CurrentUserSinPrivacidadDep, DbSessionDep, JWTHandlerDep, oauth2_scheme
-from src.interface.api.schemas import PrivacidadResponse, SSETicketResponse, TokenResponse
+from src.infrastructure.security.google_verifier_provider import obtener_verificador_google
+from src.interface.api.deps import (
+    CurrentUserDep,
+    CurrentUserSinPrivacidadDep,
+    DbSessionDep,
+    JWTHandlerDep,
+    SettingsDep,
+    oauth2_scheme,
+)
+from src.interface.api.schemas import (
+    LoginGoogleRequest,
+    PrivacidadResponse,
+    SSETicketResponse,
+    TokenResponse,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -71,6 +85,79 @@ async def login(
         accion="LOGIN_EXITOSO",
         recurso="auth/login",
         detalle={"email": form_data.username},
+        ip_origen=ip,
+    )
+    await session.commit()
+    return TokenResponse(
+        access_token=resultado.access_token,
+        require_privacy_consent=resultado.require_privacy_consent,
+    )
+
+
+@router.post("/google", response_model=TokenResponse)
+async def login_google(
+    body: LoginGoogleRequest,
+    session: DbSessionDep,
+    jwt_handler: JWTHandlerDep,
+    settings: SettingsDep,
+    request: Request,
+) -> TokenResponse:
+    """RF-17 (método alternativo): Google verifica la identidad; la
+    autorización sigue siendo la tabla `users`.
+
+    No da de alta usuarios. Un correo que no esté ya provisionado por un
+    administrador se rechaza con el mismo mensaje que un token inválido, de
+    modo que el endpoint no sirva para averiguar qué correos tienen acceso.
+    """
+    if not settings.google_oauth_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El acceso con Google no está habilitado.",
+        )
+
+    # Misma cuota que el login con contraseña: sin ella, este endpoint sería el
+    # camino sin límite para sondear qué correos están dados de alta.
+    limiter = request.app.state.login_rate_limiter
+    ip = _ip_cliente(request)
+    if limiter.bloqueado(ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Demasiados intentos fallidos. Intenta nuevamente en unos minutos.",
+            headers={"Retry-After": str(limiter.segundos_para_reintentar(ip))},
+        )
+
+    auditoria = AuditarAccionCriticaUseCase(SQLAlchemyAuditLogRepository(session))
+    use_case = AutenticarConGoogleUseCase(
+        SQLAlchemyUsuarioRepository(session),
+        jwt_handler,
+        obtener_verificador_google(settings),
+    )
+    try:
+        resultado = await use_case.execute(body.id_token)
+    except CredencialesInvalidasError as exc:
+        limiter.registrar_fallo(ip)
+        await auditoria.execute(
+            usuario_id=None,
+            accion="LOGIN_GOOGLE_FALLIDO",
+            recurso="auth/google",
+            detalle={"motivo": "identidad no autorizada o token inválido"},
+            ip_origen=ip,
+        )
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    limiter.reiniciar(ip)
+    await auditoria.execute(
+        usuario_id=resultado.usuario_id,
+        accion="LOGIN_EXITOSO",
+        recurso="auth/google",
+        # Queda constancia del método de acceso: la bitácora debe permitir
+        # distinguir una sesión abierta con contraseña de una abierta con Google.
+        detalle={"metodo": "google"},
         ip_origen=ip,
     )
     await session.commit()

@@ -65,7 +65,7 @@ async def exportar_reporte_bpa(
         device_id=reporte.device_id,
         fecha_desde=reporte.fecha_desde,
         fecha_hasta=reporte.fecha_hasta,
-        lecturas=[lectura_to_response(l) for l in reporte.lecturas],
+        lecturas=[lectura_to_response(lectura) for lectura in reporte.lecturas],
         alertas=[alerta_to_response(a) for a in reporte.alertas],
         registros_trazabilidad=[trazabilidad_to_response(r) for r in reporte.registros_trazabilidad],
     )

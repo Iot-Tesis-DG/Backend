@@ -6,6 +6,7 @@ proceso (_CANDADO_CADENA) serializa correctamente la sección crítica
 """
 
 import asyncio
+from itertools import pairwise
 
 from src.application.use_cases.registrar_hash_encadenado import RegistrarHashEncadenadoUseCase
 from src.application.use_cases.verificar_integridad_registro import (
@@ -59,7 +60,7 @@ async def test_escrituras_concurrentes_producen_cadena_estrictamente_lineal(db_s
         registros = await repositorio.listar_todos_ordenados()
 
     assert len(registros) == N_ESCRITURAS_CONCURRENTES
-    for anterior, actual in zip(registros, registros[1:]):
+    for anterior, actual in pairwise(registros):
         assert actual.previous_hash == anterior.hash_actual, (
             "Cadena bifurcada: el previous_hash de un registro no coincide con el "
             "hash_actual del registro inmediatamente anterior."

@@ -9,9 +9,10 @@ import pathlib
 import tempfile
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
+
+from alembic import command
 
 RAIZ = pathlib.Path(__file__).resolve().parents[2]
 
