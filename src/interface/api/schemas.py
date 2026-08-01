@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
@@ -8,13 +9,36 @@ from src.domain.value_objects.rol import Rol
 
 PASSWORD_MIN_LENGTH = 10
 
+# bcrypt solo considera los primeros 72 BYTES de la contraseña y descarta el
+# resto en silencio. Con el antiguo tope de 128 caracteres, dos contraseñas que
+# compartieran los primeros 72 bytes eran intercambiables al iniciar sesión, y
+# el usuario no tenía forma de saberlo. Se rechaza en el borde en lugar de
+# truncar: es preferible un 422 explícito a una contraseña que "funciona" con
+# una cola distinta a la que se escribió.
+PASSWORD_MAX_BYTES = 72
 
-class LoginRequest(BaseModel):
+
+class _PeticionEstricta(BaseModel):
+    """Base de todo cuerpo de petición de la API.
+
+    `extra="forbid"` (OWASP API6, asignación masiva): un campo no declarado deja
+    de ignorarse en silencio y pasa a ser un 422. Ningún caso de uso construye
+    entidades desempaquetando el cuerpo recibido, así que no había una
+    vulnerabilidad explotable; lo que sí había era que un cliente desalineado
+    —un frontend que envía `rol` a un endpoint que no lo acepta— fallaba de
+    forma invisible en vez de ruidosa. Es el mismo criterio que ya aplicaba el
+    contrato MQTT (`LecturaPayload`), que sí lo declaraba.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LoginRequest(_PeticionEstricta):
     email: EmailStr
     password: str = Field(min_length=8)
 
 
-class LoginGoogleRequest(BaseModel):
+class LoginGoogleRequest(_PeticionEstricta):
     """ID token que devuelve Google Identity Services en el navegador.
 
     El límite de 4096 evita que el endpoint acepte cuerpos arbitrariamente
@@ -39,10 +63,10 @@ class PrivacidadResponse(BaseModel):
     privacy_version_accepted: str | None
 
 
-class UsuarioCreateRequest(BaseModel):
+class UsuarioCreateRequest(_PeticionEstricta):
     nombre: str = Field(min_length=1, max_length=120)
     email: EmailStr
-    password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=128)
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH)
     rol: Rol
 
     @field_validator("password")
@@ -50,6 +74,13 @@ class UsuarioCreateRequest(BaseModel):
     def _politica_password(cls, valor: str) -> str:
         if not any(c.isdigit() for c in valor) or not any(c.isalpha() for c in valor):
             raise ValueError("La contraseña debe combinar letras y números")
+        # Se mide en bytes porque es lo que consume bcrypt: una contraseña con
+        # acentos o emoji ocupa más bytes que caracteres tiene.
+        if len(valor.encode("utf-8")) > PASSWORD_MAX_BYTES:
+            raise ValueError(
+                f"La contraseña no puede superar {PASSWORD_MAX_BYTES} bytes "
+                "(bcrypt ignora en silencio lo que exceda ese límite)"
+            )
         return valor
 
 
@@ -65,11 +96,11 @@ class UsuarioResponse(BaseModel):
     desactivado_en: datetime | None = None
 
 
-class DesactivarUsuarioRequest(BaseModel):
+class DesactivarUsuarioRequest(_PeticionEstricta):
     motivo: str = Field(min_length=1, max_length=50)
 
 
-class LecturaIngestRequest(BaseModel):
+class LecturaIngestRequest(_PeticionEstricta):
     """Espejo de src.infrastructure.mqtt.payload_schema.LecturaPayload para ingesta vía REST."""
 
     device_id: str = Field(min_length=1, max_length=50)
@@ -78,8 +109,10 @@ class LecturaIngestRequest(BaseModel):
     humedad_ambiental: float | None = Field(default=None, ge=0.0, le=100.0)
     temperatura_interna: float | None = Field(default=None, ge=-55.0, le=125.0)
     apertura_refrigerador: bool = False
-    estado_conectividad: str = "online"
-    firmware_version: str | None = None
+    # Mismos dominios que en LecturaPayload: la vía REST y la vía MQTT deben
+    # aceptar exactamente lo mismo, o el contrato se bifurca según el transporte.
+    estado_conectividad: Literal["online", "offline"] = "online"
+    firmware_version: str | None = Field(default=None, max_length=20)
     duracion_apertura_segundos: int = Field(default=0, ge=0)
 
 
@@ -125,7 +158,7 @@ class AlertaResponse(BaseModel):
     cerrada_en: datetime | None = None
 
 
-class AccionCorrectivaCreateRequest(BaseModel):
+class AccionCorrectivaCreateRequest(_PeticionEstricta):
     descripcion: str = Field(min_length=1, max_length=2000)
 
 
@@ -176,6 +209,15 @@ class ReporteBPAResponse(BaseModel):
     lecturas: list[LecturaResponse]
     alertas: list[AlertaResponse]
     registros_trazabilidad: list[TrazabilidadResponse]
+    # RF-13: un reporte de cumplimiento que omite registros en silencio no es
+    # evidencia válida. A la cadencia del firmware (30 s) el tope por colección
+    # cubre ~3,5 días, así que un reporte mensual SE TRUNCA, y quien lo lee
+    # tiene que saberlo.
+    truncado: bool = False
+    lecturas_truncadas: bool = False
+    alertas_truncadas: bool = False
+    trazabilidad_truncada: bool = False
+    limite_por_coleccion: int | None = None
 
 
 class DispositivoResponse(BaseModel):
@@ -196,13 +238,13 @@ class DispositivoResponse(BaseModel):
     observaciones_calibracion: str | None = None
 
 
-class DispositivoBajaRequest(BaseModel):
+class DispositivoBajaRequest(_PeticionEstricta):
     motivo: str = Field(min_length=1, max_length=50)
     descripcion: str | None = Field(default=None, max_length=2000)
     device_id_reemplazo: str | None = Field(default=None, max_length=50)
 
 
-class FirmwareReleaseCreateRequest(BaseModel):
+class FirmwareReleaseCreateRequest(_PeticionEstricta):
     version: str = Field(min_length=1, max_length=20)
     hash_sha256: str = Field(min_length=64, max_length=64)
     descripcion: str = Field(min_length=1, max_length=2000)
@@ -216,7 +258,7 @@ class FirmwareReleaseResponse(BaseModel):
     fecha_compilacion: datetime
 
 
-class FirmwareDespliegueCreateRequest(BaseModel):
+class FirmwareDespliegueCreateRequest(_PeticionEstricta):
     device_id: str = Field(min_length=1, max_length=50)
     version_objetivo: str = Field(min_length=1, max_length=20)
     programado_para: datetime | None = None
@@ -232,7 +274,7 @@ class FirmwareDespliegueResponse(BaseModel):
     completado_en: datetime | None
 
 
-class ChecklistBPARequest(BaseModel):
+class ChecklistBPARequest(_PeticionEstricta):
     """HU-37: los diez ítems del Manual de Buenas Prácticas de Almacenamiento.
 
     Todos son obligatorios: un checklist parcial no es evidencia de
@@ -287,7 +329,7 @@ class ChecklistBPAResponse(BaseModel):
     updated_at: datetime
 
 
-class CalibracionRequest(BaseModel):
+class CalibracionRequest(_PeticionEstricta):
     """HU-30: registro del certificado de calibración del sensor."""
 
     fecha_calibracion: date

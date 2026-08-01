@@ -27,8 +27,11 @@ def instalar_security_headers(app: FastAPI, *, hsts: bool) -> None:
         response.headers["Permissions-Policy"] = "camera=(), geolocation=(), microphone=()"
         if not request.url.path.startswith(_RUTAS_DOCS):
             response.headers["Content-Security-Policy"] = _CSP_API
-        if request.url.path.startswith("/api/auth"):
-            # Tokens y credenciales jamás deben quedar en cachés intermedias.
+        if request.url.path.startswith("/api"):
+            # Tokens y credenciales jamás deben quedar en cachés intermedias, y
+            # tampoco los datos personales y sanitarios que devuelve el resto de
+            # la API (historial, auditoría, reportes BPA): la Ley N.° 29733 exige
+            # limitar su difusión, y una caché intermedia es difusión no prevista.
             response.headers["Cache-Control"] = "no-store"
         if hsts:
             response.headers["Strict-Transport-Security"] = (

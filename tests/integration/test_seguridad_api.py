@@ -35,6 +35,16 @@ def test_endpoints_de_auth_no_son_cacheables(client, crear_usuario):
     assert response.headers["Cache-Control"] == "no-store"
 
 
+async def test_los_datos_personales_de_la_api_tampoco_son_cacheables(client, token_admin):
+    """Ley N.° 29733: el historial, la auditoría y los reportes contienen datos
+    personales y sanitarios. `no-store` solo cubría /api/auth, así que el resto
+    podía quedar retenido en cachés intermedias fuera del control del titular."""
+    for ruta in ("/api/auditoria", "/api/usuarios"):
+        response = client.get(ruta, headers=auth_header(token_admin))
+        assert response.status_code == 200, ruta
+        assert response.headers["Cache-Control"] == "no-store", ruta
+
+
 # ── Rate limiting de login ───────────────────────────────────────
 
 

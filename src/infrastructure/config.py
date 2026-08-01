@@ -1,3 +1,4 @@
+import warnings
 from functools import lru_cache
 from typing import Literal
 
@@ -5,6 +6,19 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _SECRETO_POR_DEFECTO = "clave_secreta_larga_y_aleatoria_cambiar_en_produccion"
+
+# RFC 7518 §3.2: la clave HMAC de HS256 debe tener al menos el tamaño de la
+# salida de la función hash (32 bytes). Con una clave más corta la firma es
+# más barata de atacar por fuerza bruta que el propio SHA-256.
+LONGITUD_MINIMA_CLAVE_JWT = 32
+
+
+class ClaveJWTDebilWarning(UserWarning):
+    """Aviso de arranque: la clave JWT no alcanza el mínimo de RFC 7518.
+
+    Fuera de producción no se aborta (el desarrollo local y las pruebas deben
+    poder arrancar), pero el aviso debe ser visible y atribuible a este
+    proyecto, no un mensaje genérico de la librería de JWT."""
 
 
 class Settings(BaseSettings):
@@ -99,11 +113,35 @@ class Settings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
 
     @model_validator(mode="after")
+    def _validar_longitud_clave_jwt(self) -> "Settings":
+        """La longitud mínima de clave se comprueba en TODOS los entornos.
+
+        En producción es un error de arranque (lo aplica
+        `_validar_secretos_en_produccion`); en desarrollo y pruebas se avisa,
+        porque una clave corta en el entorno de trabajo acaba copiándose al
+        despliegue con demasiada facilidad.
+        """
+        if (
+            self.environment != "production"
+            and len(self.jwt_secret_key.encode()) < LONGITUD_MINIMA_CLAVE_JWT
+        ):
+            warnings.warn(
+                f"JWT_SECRET_KEY mide {len(self.jwt_secret_key.encode())} bytes; el mínimo "
+                f"recomendado para HS256 es {LONGITUD_MINIMA_CLAVE_JWT} (RFC 7518 §3.2).",
+                ClaveJWTDebilWarning,
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validar_secretos_en_produccion(self) -> "Settings":
         if self.environment == "production":
-            if self.jwt_secret_key == _SECRETO_POR_DEFECTO or len(self.jwt_secret_key) < 32:
+            if (
+                self.jwt_secret_key == _SECRETO_POR_DEFECTO
+                or len(self.jwt_secret_key.encode()) < LONGITUD_MINIMA_CLAVE_JWT
+            ):
                 raise ValueError(
-                    "JWT_SECRET_KEY debe ser un secreto aleatorio de al menos 32 caracteres "
+                    "JWT_SECRET_KEY debe ser un secreto aleatorio de al menos 32 bytes "
                     "en producción (no usar el valor por defecto)."
                 )
             if any(origen == "*" for origen in self.cors_origins):

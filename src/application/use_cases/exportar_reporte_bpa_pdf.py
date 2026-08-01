@@ -1,6 +1,10 @@
 from datetime import datetime
 from uuid import UUID
 
+from src.application.use_cases.exportar_reporte_bpa import (
+    LIMITE_REGISTROS_REPORTE,
+    listar_detectando_truncamiento,
+)
 from src.application.use_cases.verificar_integridad_registro import (
     VerificarIntegridadRegistroUseCase,
 )
@@ -86,11 +90,28 @@ class ExportarReporteBPAPDFUseCase:
         fecha_hasta: datetime,
         device_id: str | None = None,
     ) -> bytes:
-        lecturas = await self._lectura_repository.listar(
-            device_id=device_id, desde=fecha_desde, hasta=fecha_hasta, limite=10_000
+        # RF-13: las tres colecciones se ciñen al mismo periodo. Antes solo las
+        # lecturas se acotaban, así que el reporte de un mes se acompañaba de
+        # las alertas y la trazabilidad de todo el histórico.
+        lecturas, lecturas_truncadas = await listar_detectando_truncamiento(
+            self._lectura_repository.listar,
+            device_id=device_id, desde=fecha_desde, hasta=fecha_hasta,
         )
-        alertas = await self._alerta_repository.listar(device_id=device_id, limite=10_000)
-        trazabilidad = await self._trazabilidad_repository.listar(device_id=device_id, limite=10_000)
+        alertas, alertas_truncadas = await listar_detectando_truncamiento(
+            self._alerta_repository.listar,
+            device_id=device_id, desde=fecha_desde, hasta=fecha_hasta,
+        )
+        trazabilidad, trazabilidad_truncada = await listar_detectando_truncamiento(
+            self._trazabilidad_repository.listar,
+            device_id=device_id, desde=fecha_desde, hasta=fecha_hasta,
+        )
+        truncamiento = {
+            "truncado": lecturas_truncadas or alertas_truncadas or trazabilidad_truncada,
+            "lecturas_truncadas": lecturas_truncadas,
+            "alertas_truncadas": alertas_truncadas,
+            "trazabilidad_truncada": trazabilidad_truncada,
+            "limite_por_coleccion": LIMITE_REGISTROS_REPORTE,
+        }
         checklists = await self._checklist_repository.listar_por_rango_fechas(
             fecha_desde.date().isoformat(), fecha_hasta.date().isoformat()
         )
@@ -151,6 +172,7 @@ class ExportarReporteBPAPDFUseCase:
             fecha_hasta=fecha_hasta.date().isoformat(),
             usuario=usuario_nombre,
             device_id=device_id,
+            truncamiento=truncamiento,
         )
 
         # Deja constancia de la exportación (quién descargó qué período).

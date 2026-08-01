@@ -339,6 +339,60 @@ class GeneradorReporteBPAPDF:
         )
         return [Paragraph("2. Verificación de integridad", e["seccion"]), tabla]
 
+    def _aviso_truncamiento(self, truncamiento: dict | None) -> list:
+        """Declara que el reporte no contiene todo el periodo.
+
+        A la cadencia de muestreo del nodo (30 s → 2.880 lecturas/día) el tope
+        por colección cubre unos 3,5 días, de modo que un reporte mensual queda
+        forzosamente recortado. Callarlo convertiría el documento en una
+        evidencia engañosa ante una inspección: quien lo lee daría por completo
+        un histórico que no lo es. El aviso va al principio, no en una nota al
+        pie, porque condiciona la lectura de todo lo que sigue.
+        """
+        if not truncamiento or not truncamiento.get("truncado"):
+            return []
+
+        e = self._estilos
+        limite = truncamiento.get("limite_por_coleccion", 0)
+        recortadas = [
+            nombre
+            for clave, nombre in (
+                ("lecturas_truncadas", "lecturas térmicas"),
+                ("alertas_truncadas", "alertas"),
+                ("trazabilidad_truncada", "registros de trazabilidad"),
+            )
+            if truncamiento.get(clave)
+        ]
+
+        detalle = (
+            f"Este reporte está <b>INCOMPLETO</b>. El período solicitado contiene más "
+            f"{' y más '.join(recortadas)} de los que admite un solo documento "
+            f"(tope de <b>{limite:,}</b> registros por categoría). "
+            "Para obtener el histórico completo, divida el período en rangos más cortos "
+            "y conserve todos los reportes parciales como un único legajo."
+        ).replace(",", ".")
+
+        contenido = [
+            [Paragraph("<b>⚠ Reporte parcial: faltan registros del período</b>", e["cuerpo"])],
+            [Paragraph(detalle, e["cuerpo"])],
+        ]
+        tabla = Table(contenido, colWidths=[172 * mm])
+        ambar = colors.HexColor("#B26A00")
+        tabla.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFF6E5")),
+                    ("BOX", (0, 0), (-1, -1), 0.6, ambar),
+                    ("LINEBEFORE", (0, 0), (0, -1), 2.5, ambar),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 9),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+                    ("TOPPADDING", (0, 0), (-1, 0), 8),
+                    ("BOTTOMPADDING", (0, -1), (-1, -1), 8),
+                ]
+            )
+        )
+        return [tabla]
+
     def _seccion_lecturas(self, lecturas: list[dict]) -> list:
         e = self._estilos
         bloques = [Paragraph("4. Registro histórico de lecturas térmicas", e["seccion"])]
@@ -534,6 +588,7 @@ class GeneradorReporteBPAPDF:
         fecha_hasta: str,
         usuario: str,
         device_id: str | None = None,
+        truncamiento: dict | None = None,
     ) -> bytes:
         self._generado_en = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -559,6 +614,9 @@ class GeneradorReporteBPAPDF:
 
         historia: list = []
         historia += self._portada(contexto)
+        # Antes del resumen: si el documento está recortado, hay que saberlo
+        # antes de leer ninguna cifra.
+        historia += self._aviso_truncamiento(truncamiento)
         historia += self._seccion_resumen(estadisticas)
         historia += [KeepTogether(self._seccion_integridad(veredicto_integridad))]
         historia += self._seccion_checklist(checklists)

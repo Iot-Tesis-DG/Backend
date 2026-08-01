@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 from uuid import UUID
 
 from src.domain.entities.registro_trazabilidad import RegistroTrazabilidad
@@ -27,6 +28,8 @@ class ITrazabilidadRepository(ABC):
         self,
         tipo_evento: str | None = None,
         device_id: str | None = None,
+        desde: datetime | None = None,
+        hasta: datetime | None = None,
         limite: int = 100,
         offset: int = 0,
     ) -> list[RegistroTrazabilidad]: ...

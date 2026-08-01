@@ -6,7 +6,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.entities.usuario import Usuario
-from src.domain.exceptions import CredencialesInvalidasError, PermisoDenegadoError, RecursoNoEncontradoError
+from src.domain.exceptions import CredencialesInvalidasError, PermisoDenegadoError
 from src.domain.value_objects.rol import Rol
 from src.infrastructure.config import Settings, get_settings
 from src.infrastructure.database.repositories.usuario_repository import SQLAlchemyUsuarioRepository
@@ -120,13 +120,3 @@ def require_roles(*roles_permitidos: Rol) -> Callable[[Usuario], Usuario]:
         return usuario
 
     return dependencia
-
-
-def traducir_excepcion_dominio(exc: Exception) -> HTTPException:
-    if isinstance(exc, RecursoNoEncontradoError):
-        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-    if isinstance(exc, CredencialesInvalidasError):
-        return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc))
-    if isinstance(exc, PermisoDenegadoError):
-        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
-    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))

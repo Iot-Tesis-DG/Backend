@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -58,6 +59,8 @@ class SQLAlchemyAlertaRepository(IAlertaRepository):
         self,
         device_id: str | None = None,
         revisada: bool | None = None,
+        desde: datetime | None = None,
+        hasta: datetime | None = None,
         limite: int = 100,
         offset: int = 0,
     ) -> list[AlertaTermica]:
@@ -66,6 +69,12 @@ class SQLAlchemyAlertaRepository(IAlertaRepository):
             stmt = stmt.where(ThermalAlertModel.device_id == device_id)
         if revisada is not None:
             stmt = stmt.where(ThermalAlertModel.revisada == revisada)
+        # Acotar por periodo es indispensable en el reporte BPA (RF-13): sin
+        # esto el reporte de un mes incluía las alertas de todo el histórico.
+        if desde is not None:
+            stmt = stmt.where(ThermalAlertModel.created_at >= desde)
+        if hasta is not None:
+            stmt = stmt.where(ThermalAlertModel.created_at <= hasta)
         stmt = stmt.order_by(ThermalAlertModel.created_at.desc()).limit(limite).offset(offset)
         result = await self._session.execute(stmt)
         return [_to_entity(m) for m in result.scalars().all()]

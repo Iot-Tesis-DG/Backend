@@ -13,28 +13,48 @@ logger = logging.getLogger("infrastructure.mqtt.mqtt_client")
 TOPIC_LECTURAS = "farmacias/+/lecturas"
 TOPIC_EVENTOS = "farmacias/+/eventos"
 
+# Reconexión con espera creciente: un broker gestionado (EMQX Cloud) puede
+# quedar inaccesible unos segundos por mantenimiento o corte de red. Reintentar
+# en bucle cerrado consumiría CPU y cuota de conexiones del plan; esperar
+# minutos retrasaría demasiado la reanudación de la ingesta (RF-05).
+RECONEXION_ESPERA_INICIAL_SEGUNDOS = 1.0
+RECONEXION_ESPERA_MAXIMA_SEGUNDOS = 60.0
+
 MensajeHandler = Callable[[aiomqtt.Message], Awaitable[None]]
 
 
 def build_ssl_context(tls_enabled: bool) -> ssl.SSLContext | None:
+    """Contexto TLS 1.2/1.3 con verificación del certificado del broker (RNF-05).
+
+    `create_default_context()` exige certificado válido y comprobación del
+    nombre de host. Devolver None deshabilita TLS por completo; solo tiene
+    sentido contra un broker local de desarrollo.
+    """
     return ssl.create_default_context() if tls_enabled else None
 
 
 def build_client(settings: Settings) -> aiomqtt.Client:
+    """Cliente aiomqtt 2.x.
+
+    Los nombres de los parámetros son los de aiomqtt 2 (`tls_context`,
+    `keepalive`, `password` como str). Con los nombres de la 1.x el
+    constructor lanza TypeError y la ingesta MQTT no llega ni a intentar
+    conectarse — ver hallazgo S-01.
+    """
     return aiomqtt.Client(
         hostname=settings.mqtt_host,
         port=settings.mqtt_port,
         username=settings.mqtt_username,
-        password=settings.mqtt_password.encode(),
+        password=settings.mqtt_password,
         identifier=settings.mqtt_client_id,
-        ssl_context=build_ssl_context(settings.mqtt_tls_enabled),
-        reconnect=True,
-        keep_alive=60,
+        tls_context=build_ssl_context(settings.mqtt_tls_enabled),
+        keepalive=60,
     )
 
 
 async def consumir_mensajes(client: aiomqtt.Client, manejador: MensajeHandler) -> None:
-    async for message in client.messages():
+    # En aiomqtt 2.x `messages` es una propiedad, no un método.
+    async for message in client.messages:
         try:
             await manejador(message)
         except Exception:
@@ -50,16 +70,52 @@ async def consumir_mensajes(client: aiomqtt.Client, manejador: MensajeHandler) -
             continue
 
 
-@contextlib.asynccontextmanager
-async def mqtt_session(settings: Settings, manejador: MensajeHandler) -> AsyncIterator[aiomqtt.Client]:
-    """Context manager reutilizable en el lifespan de FastAPI (ver README sección 5)."""
+async def _sesion_una_vez(settings: Settings, manejador: MensajeHandler) -> None:
+    """Una conexión completa: conectar, suscribirse y consumir hasta que caiga."""
     async with build_client(settings) as client:
         await client.subscribe(TOPIC_LECTURAS)
         await client.subscribe(TOPIC_EVENTOS)
-        task = asyncio.create_task(consumir_mensajes(client, manejador))
+        logger.info("Conectado al broker MQTT %s:%s", settings.mqtt_host, settings.mqtt_port)
+        await consumir_mensajes(client, manejador)
+
+
+async def consumir_con_reconexion(settings: Settings, manejador: MensajeHandler) -> None:
+    """Mantiene viva la ingesta MQTT reconectando ante caídas del broker.
+
+    Sin este bucle la primera desconexión terminaba la tarea consumidora en
+    silencio: el backend seguía respondiendo por HTTP mientras dejaba de
+    recibir lecturas de los ESP32 indefinidamente (RF-05/RF-06). Es el peor
+    modo de fallo posible aquí, porque no es visible desde fuera.
+    """
+    espera = RECONEXION_ESPERA_INICIAL_SEGUNDOS
+    while True:
         try:
-            yield client
-        finally:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            await _sesion_una_vez(settings, manejador)
+            # El iterador terminó sin error: el broker cerró la sesión.
+            logger.warning("El flujo de mensajes MQTT terminó; se reintentará la conexión.")
+        except asyncio.CancelledError:
+            raise
+        except aiomqtt.MqttError as exc:
+            logger.warning("Conexión MQTT perdida (%s). Reintentando en %.0f s.", exc, espera)
+        except Exception:
+            logger.exception("Error inesperado en la sesión MQTT. Reintentando en %.0f s.", espera)
+
+        await asyncio.sleep(espera)
+        espera = min(espera * 2, RECONEXION_ESPERA_MAXIMA_SEGUNDOS)
+
+
+@contextlib.asynccontextmanager
+async def mqtt_session(settings: Settings, manejador: MensajeHandler) -> AsyncIterator[asyncio.Task]:
+    """Ciclo de vida de la ingesta MQTT para el lifespan de FastAPI.
+
+    Cede la tarea consumidora y no un cliente: con reconexión automática el
+    cliente concreto cambia en cada reintento, así que guardar la referencia a
+    uno solo daría una idea falsa de sesión estable.
+    """
+    task = asyncio.create_task(consumir_con_reconexion(settings, manejador))
+    try:
+        yield task
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task

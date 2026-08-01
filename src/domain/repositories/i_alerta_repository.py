@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 from uuid import UUID
 
 from src.domain.entities.alerta_termica import AlertaTermica
@@ -17,6 +18,8 @@ class IAlertaRepository(ABC):
         self,
         device_id: str | None = None,
         revisada: bool | None = None,
+        desde: datetime | None = None,
+        hasta: datetime | None = None,
         limite: int = 100,
         offset: int = 0,
     ) -> list[AlertaTermica]: ...

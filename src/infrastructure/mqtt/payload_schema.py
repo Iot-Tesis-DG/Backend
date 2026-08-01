@@ -1,7 +1,18 @@
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+
+# Techo del cuerpo de un mensaje MQTT aceptado. `PayloadBuilder::build()` del
+# firmware descarta cualquier payload de más de 512 bytes antes de publicarlo
+# (ver PayloadCore.h), así que este margen es diez veces el máximo legítimo.
+#
+# Existe porque la ingesta MQTT no atraviesa el middleware HTTP que acota el
+# cuerpo de las peticiones REST (`max_body_bytes`): sin él, quien tuviera
+# credenciales del broker podía obligar al backend a materializar en memoria un
+# mensaje arbitrariamente grande, en una instancia de 512 MB.
+MAX_BYTES_PAYLOAD_MQTT = 5 * 1024
 
 
 class LecturaPayload(BaseModel):
@@ -31,8 +42,16 @@ class LecturaPayload(BaseModel):
     apertura_refrigerador: bool = Field(
         default=False, validation_alias=AliasChoices("apertura_refrigerador", "puerta_abierta")
     )
-    estado_conectividad: str = "online"
-    firmware_version: str | None = None
+    # El firmware solo emite estos dos valores (`lectura.online ? "online" :
+    # "offline"`). Declararlo como `str` libre dejaba entrar cualquier cadena
+    # hasta la columna `String(20)` de la base de datos, donde PostgreSQL la
+    # rechaza con un error de escritura en vez de con un 422 en el borde.
+    estado_conectividad: Literal["online", "offline"] = "online"
+    # Mismo techo que `EventoDispositivoPayload.firmware_version` y que la
+    # columna `devices.firmware_version`, que es String(20). Sin él, esta rama
+    # del contrato admitía una cadena ilimitada que acababa en la columna JSONB
+    # `payload` de cada lectura.
+    firmware_version: str | None = Field(default=None, max_length=20)
     # HU-04: el nodo acompaña cada apertura de puerta con su duración
     # acumulada. `PayloadBuilder::build()` lo emite SIEMPRE (0 con la puerta
     # cerrada), así que sin este campo `extra="forbid"` rechazaba el 100% de

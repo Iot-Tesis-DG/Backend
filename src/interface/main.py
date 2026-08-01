@@ -28,6 +28,7 @@ from src.infrastructure.database.repositories.trazabilidad_repository import (
 from src.infrastructure.database.session import _session_factory
 from src.infrastructure.mqtt.mqtt_client import mqtt_session
 from src.infrastructure.mqtt.payload_schema import (
+    MAX_BYTES_PAYLOAD_MQTT,
     EventoDispositivoPayload,
     LecturaPayload,
     TipoEventoDispositivo,
@@ -154,6 +155,19 @@ async def _procesar_evento_mqtt(message: aiomqtt.Message, broadcaster: SSEBroadc
 
 
 async def _procesar_lectura_mqtt(message: aiomqtt.Message, broadcaster: SSEBroadcaster) -> None:
+    # El tamaño se comprueba ANTES de deserializar: la ingesta MQTT no pasa por
+    # el middleware que acota el cuerpo de las peticiones REST, así que este es
+    # el único punto donde se puede rechazar un mensaje desmesurado sin haberlo
+    # convertido antes en objetos de Python.
+    if len(message.payload) > MAX_BYTES_PAYLOAD_MQTT:
+        logger.warning(
+            "Descartado: payload MQTT de %d bytes en %s (máximo %d).",
+            len(message.payload),
+            message.topic,
+            MAX_BYTES_PAYLOAD_MQTT,
+        )
+        return
+
     payload = LecturaPayload.model_validate_json(message.payload)
     settings = get_settings()
 
@@ -266,12 +280,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async def manejador(message: aiomqtt.Message) -> None:
             await _procesar_mensaje_mqtt(message, app.state.sse_broadcaster)
 
+        # La conexión y sus reintentos viven dentro de la tarea consumidora, así
+        # que el arranque nunca se bloquea ni se cae por un broker inaccesible.
+        # Se captura Exception y no solo MqttError a propósito: un fallo al
+        # construir el cliente (configuración TLS, parámetros incompatibles con
+        # la versión de aiomqtt) no es un MqttError y antes tumbaba el arranque
+        # completo del backend en Railway.
         try:
-            async with mqtt_session(settings, manejador) as client:
-                app.state.mqtt = client
+            async with mqtt_session(settings, manejador) as tarea_mqtt:
+                app.state.mqtt = tarea_mqtt
                 yield
-        except aiomqtt.MqttError as exc:
-            logger.warning("No se pudo conectar a EMQX Cloud Serverless: %s. Backend continúa sin MQTT.", exc)
+        except Exception as exc:
+            logger.exception(
+                "No se pudo iniciar la ingesta MQTT (%s). Backend continúa sin MQTT.", exc
+            )
             app.state.mqtt = None
             yield
     else:

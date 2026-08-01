@@ -21,14 +21,41 @@ from src.infrastructure.database.repositories.reporte_repository import SQLAlche
 from src.infrastructure.database.repositories.trazabilidad_repository import (
     SQLAlchemyTrazabilidadRepository,
 )
+from src.interface.api.api_protection import limitar_por_usuario
 from src.interface.api.deps import DbSessionDep, require_roles
 from src.interface.api.mappers import alerta_to_response, lectura_to_response, trazabilidad_to_response
 from src.interface.api.schemas import ReporteBPAResponse
 
 router = APIRouter(prefix="/api/reportes", tags=["reportes"])
 
+# Un reporte BPA cubre como mucho un ejercicio anual. El techo no es cosmético:
+# cada exportación materializa en memoria hasta 10.000 lecturas, 10.000 alertas
+# y 10.000 registros de trazabilidad, y la instancia de Railway dispone de
+# 512 MB compartidos con el resto de la aplicación.
+MAX_DIAS_RANGO_REPORTE = 366
 
-@router.get("/bpa", response_model=ReporteBPAResponse)
+
+def _validar_rango(fecha_desde: datetime, fecha_hasta: datetime) -> None:
+    if fecha_desde > fecha_hasta:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="fecha_desde no puede ser posterior a fecha_hasta",
+        )
+    if (fecha_hasta - fecha_desde).days > MAX_DIAS_RANGO_REPORTE:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"El periodo del reporte no puede superar {MAX_DIAS_RANGO_REPORTE} días.",
+        )
+
+
+@router.get(
+    "/bpa",
+    response_model=ReporteBPAResponse,
+    # Exportar es la operación más cara de la API (tres consultas amplias y una
+    # serialización grande). Sin cuota propia, el límite global por IP la deja
+    # repetir cientos de veces por minuto.
+    dependencies=[limitar_por_usuario("reportes_bpa", 10, 60)],
+)
 async def exportar_reporte_bpa(
     fecha_desde: datetime,
     fecha_hasta: datetime,
@@ -37,6 +64,8 @@ async def exportar_reporte_bpa(
     usuario=Depends(require_roles(Rol.FARMACEUTICO)),
     device_id: str | None = None,
 ) -> ReporteBPAResponse:
+    _validar_rango(fecha_desde, fecha_hasta)
+
     lectura_repository = SQLAlchemyLecturaRepository(session)
     alerta_repository = SQLAlchemyAlertaRepository(session)
     trazabilidad_repository = SQLAlchemyTrazabilidadRepository(session)
@@ -68,6 +97,11 @@ async def exportar_reporte_bpa(
         lecturas=[lectura_to_response(lectura) for lectura in reporte.lecturas],
         alertas=[alerta_to_response(a) for a in reporte.alertas],
         registros_trazabilidad=[trazabilidad_to_response(r) for r in reporte.registros_trazabilidad],
+        truncado=reporte.truncado,
+        lecturas_truncadas=reporte.lecturas_truncadas,
+        alertas_truncadas=reporte.alertas_truncadas,
+        trazabilidad_truncada=reporte.trazabilidad_truncada,
+        limite_por_coleccion=reporte.limite_aplicado,
     )
 
 
@@ -75,6 +109,7 @@ async def exportar_reporte_bpa(
     "/bpa/pdf",
     response_class=StreamingResponse,
     responses={200: {"content": {"application/pdf": {}}, "description": "Reporte BPA en PDF"}},
+    dependencies=[limitar_por_usuario("reportes_bpa_pdf", 10, 60)],
 )
 async def exportar_reporte_bpa_pdf(
     fecha_desde: datetime,
@@ -86,11 +121,7 @@ async def exportar_reporte_bpa_pdf(
 ) -> StreamingResponse:
     """RF-13 / HU-38: descarga el reporte BPA del período en PDF, incluyendo el
     veredicto de integridad de la cadena SHA-256 dentro del propio documento."""
-    if fecha_desde > fecha_hasta:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="fecha_desde no puede ser posterior a fecha_hasta",
-        )
+    _validar_rango(fecha_desde, fecha_hasta)
 
     trazabilidad_repository = SQLAlchemyTrazabilidadRepository(session)
     # Verificación de SOLO LECTURA: se omiten a propósito el repositorio de

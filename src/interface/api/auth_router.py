@@ -42,6 +42,29 @@ def _ip_cliente(request: Request) -> str:
     return request.client.host if request.client else "desconocida"
 
 
+def enmascarar_email(email: str) -> str:
+    """Reduce un correo a `p***@dominio` para la bitácora.
+
+    Ley N.° 29733, principio de proporcionalidad: el correo tecleado en un
+    intento FALLIDO puede no pertenecer a ningún usuario del sistema —un error
+    de escritura, o la dirección de un tercero usada por quien ataca—, y
+    `audit_logs` es inmutable por diseño, así que no hay vía de rectificación
+    ni de supresión posterior.
+
+    Se conserva lo que da valor forense a RF-16: la inicial y el dominio bastan
+    para distinguir un ataque dirigido a una cuenta concreta de un barrido, y
+    para correlacionar intentos (el mismo correo produce siempre la misma
+    máscara). Lo que se descarta es la identificación directa del titular.
+    """
+    if not email or "@" not in email:
+        # Sin forma de correo no hay dominio que preservar; se guarda solo la
+        # longitud, que sigue permitiendo distinguir intentos entre sí.
+        return f"<sin formato de correo, {len(email)} caracteres>"
+    local, _, dominio = email.partition("@")
+    inicial = local[0] if local else ""
+    return f"{inicial}***@{dominio}"
+
+
 @router.post("/login", response_model=TokenResponse)
 async def login(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
@@ -69,7 +92,7 @@ async def login(
             usuario_id=None,
             accion="LOGIN_FALLIDO",
             recurso="auth/login",
-            detalle={"email": form_data.username},
+            detalle={"email": enmascarar_email(form_data.username)},
             ip_origen=ip,
         )
         await session.commit()
@@ -84,7 +107,10 @@ async def login(
         usuario_id=resultado.usuario_id,
         accion="LOGIN_EXITOSO",
         recurso="auth/login",
-        detalle={"email": form_data.username},
+        # En un login correcto `usuario_id` ya identifica al titular de forma
+        # estable; repetir el correo sería dato redundante en una bitácora
+        # inmutable. Se deja constancia del método de acceso, como en /google.
+        detalle={"metodo": "password"},
         ip_origen=ip,
     )
     await session.commit()
@@ -170,10 +196,18 @@ async def login_google(
 @router.post("/sse-ticket", response_model=SSETicketResponse)
 async def emitir_ticket_sse(
     usuario: CurrentUserDep,
+    token: Annotated[str, Depends(oauth2_scheme)],
     jwt_handler: JWTHandlerDep,
 ) -> SSETicketResponse:
-    """Ticket efímero para abrir el stream SSE (EventSource no envía headers)."""
-    return SSETicketResponse(ticket=jwt_handler.crear_ticket_sse(usuario.id))
+    """Ticket efímero para abrir el stream SSE (EventSource no envía headers).
+
+    El ticket queda atado al access token que lo pidió: al cerrar sesión, el
+    stream que se abrió con él deja de emitir.
+    """
+    payload = jwt_handler.decodificar_token(token)
+    return SSETicketResponse(
+        ticket=jwt_handler.crear_ticket_sse(usuario.id, token_padre_jti=payload.jti)
+    )
 
 
 @router.post("/privacidad/aceptar", response_model=PrivacidadResponse)

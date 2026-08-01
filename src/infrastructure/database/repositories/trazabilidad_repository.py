@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select, text, update
@@ -91,6 +92,8 @@ class SQLAlchemyTrazabilidadRepository(ITrazabilidadRepository):
         self,
         tipo_evento: str | None = None,
         device_id: str | None = None,
+        desde: datetime | None = None,
+        hasta: datetime | None = None,
         limite: int = 100,
         offset: int = 0,
     ) -> list[RegistroTrazabilidad]:
@@ -99,6 +102,13 @@ class SQLAlchemyTrazabilidadRepository(ITrazabilidadRepository):
             stmt = stmt.where(TraceabilityRecordModel.tipo_evento == tipo_evento)
         if device_id:
             stmt = stmt.where(TraceabilityRecordModel.device_id == device_id)
+        # Mismo motivo que en alertas: el reporte BPA debe ceñirse al periodo.
+        # Se filtra por `timestamp` (el instante del hecho registrado), que es
+        # el campo que el propio reporte muestra al auditor.
+        if desde is not None:
+            stmt = stmt.where(TraceabilityRecordModel.timestamp >= desde)
+        if hasta is not None:
+            stmt = stmt.where(TraceabilityRecordModel.timestamp <= hasta)
         stmt = stmt.order_by(TraceabilityRecordModel.created_at.desc()).limit(limite).offset(offset)
         result = await self._session.execute(stmt)
         return [_to_entity(m) for m in result.scalars().all()]

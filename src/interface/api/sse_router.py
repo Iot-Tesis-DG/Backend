@@ -10,8 +10,9 @@ from src.interface.api.deps import JWTHandlerDep
 router = APIRouter(prefix="/api/sse", tags=["sse"])
 
 
-async def _event_stream(request: Request) -> AsyncGenerator[str, None]:
+async def _event_stream(request: Request, token_padre_jti: str | None = None) -> AsyncGenerator[str, None]:
     broadcaster = request.app.state.sse_broadcaster
+    revocacion = request.app.state.token_revocation
     queue = broadcaster.subscribe()
     try:
         # Chunk inicial: fuerza el envío de headers a través de proxies y
@@ -19,6 +20,13 @@ async def _event_stream(request: Request) -> AsyncGenerator[str, None]:
         yield ": connected\n\n"
         while True:
             if await request.is_disconnected():
+                break
+            # La sesión se comprueba en CADA vuelta, no solo al abrir el stream.
+            # Un stream SSE vive horas: si solo se validara al principio, cerrar
+            # sesión dejaría el caudal de datos térmicos fluyendo hasta que el
+            # navegador se cerrase, contradiciendo la revocación de JWT que el
+            # sistema declara como control de seguridad (RF-17).
+            if token_padre_jti is not None and revocacion.contiene(token_padre_jti):
                 break
             try:
                 mensaje = await asyncio.wait_for(queue.get(), timeout=15.0)
@@ -53,4 +61,16 @@ async def stream_lecturas(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Ticket SSE ya utilizado"
         )
-    return StreamingResponse(_event_stream(request), media_type="text/event-stream")
+
+    # Un ticket cuya sesión ya se cerró entre la emisión y el uso no abre nada.
+    if datos_ticket.token_padre_jti is not None and request.app.state.token_revocation.contiene(
+        datos_ticket.token_padre_jti
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="La sesión fue cerrada"
+        )
+
+    return StreamingResponse(
+        _event_stream(request, datos_ticket.token_padre_jti),
+        media_type="text/event-stream",
+    )

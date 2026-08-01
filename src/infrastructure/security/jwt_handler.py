@@ -23,6 +23,9 @@ class TicketSSE:
     usuario_id: UUID
     jti: str
     exp: datetime
+    # `jti` del access token que pidió este ticket. Ata el stream a la sesión:
+    # cuando ese token se revoca (logout), el stream abierto debe cerrarse.
+    token_padre_jti: str | None = None
 
 
 class JWTHandler:
@@ -76,12 +79,18 @@ class JWTHandler:
         except (KeyError, ValueError) as exc:
             raise CredencialesInvalidasError("Token con estructura inválida") from exc
 
-    def crear_ticket_sse(self, usuario_id: UUID) -> str:
+    def crear_ticket_sse(self, usuario_id: UUID, token_padre_jti: str | None = None) -> str:
         """Ticket efímero de un solo propósito para abrir el stream SSE.
 
         EventSource no puede enviar el header Authorization; el ticket viaja
         como query param, por lo que su vida corta (segundos) limita la
         exposición si queda registrado en logs intermedios.
+
+        `token_padre_jti` es el identificador del access token que solicitó el
+        ticket. Viaja dentro del ticket para que el stream pueda comprobar, a lo
+        largo de toda su vida, si esa sesión sigue vigente: un stream SSE dura
+        horas, mientras que la comprobación de revocación solo ocurría al
+        abrirlo.
         """
         ahora = datetime.now(tz=timezone.utc)
         payload = {
@@ -92,6 +101,8 @@ class JWTHandler:
             "aud": self._sse_audience,
             "jti": uuid4().hex,
         }
+        if token_padre_jti is not None:
+            payload["ptk"] = token_padre_jti
         return jwt.encode(payload, self._secret_key, algorithm=self._algorithm)
 
     def validar_ticket_sse(self, ticket: str) -> TicketSSE:
@@ -110,6 +121,7 @@ class JWTHandler:
                 usuario_id=UUID(data["sub"]),
                 jti=data["jti"],
                 exp=datetime.fromtimestamp(data["exp"], tz=timezone.utc),
+                token_padre_jti=data.get("ptk"),
             )
         except (jwt.InvalidTokenError, ValueError) as exc:
             raise CredencialesInvalidasError("Ticket SSE inválido o expirado") from exc
