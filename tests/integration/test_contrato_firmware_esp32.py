@@ -119,7 +119,9 @@ async def test_lectura_del_firmware_se_persiste_end_to_end(sesion_con_device):
     lecturas = await _lecturas(sesion_con_device)
     assert len(lecturas) == 1
     assert lecturas[0].temperatura_interna == pytest.approx(4.5)
-    assert [tipo for _, tipo in broadcaster.publicados] == ["lectura"]
+    # HU-17: primera lectura del dispositivo, sin historial para tendencia
+    # térmica -> no_clasificable en vez de imputar una tendencia de 0.0.
+    assert [tipo for _, tipo in broadcaster.publicados] == ["inferencia_omitida"]
 
 
 @pytest.mark.asyncio

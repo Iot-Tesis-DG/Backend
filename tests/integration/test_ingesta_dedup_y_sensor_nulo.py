@@ -125,7 +125,22 @@ async def test_sensor_temperatura_interna_presente_sigue_clasificando_normalment
     db_session_factory,
 ):
     """Control: con temperatura real dentro de rango, la clasificación normal
-    sigue funcionando (no se rompió el camino feliz al corregir B-05)."""
+    sigue funcionando (no se rompió el camino feliz al corregir B-05).
+    HU-17: se siembran dos lecturas previas para que la IA tenga historial
+    suficiente y calcule tendencia térmica en vez de quedar no_clasificable."""
+    async with db_session_factory() as session:
+        use_case = _construir_use_case(session)
+        await use_case.execute(
+            _lectura(timestamp=_BASE + timedelta(hours=2) - timedelta(minutes=10), temperatura_interna=5.0)
+        )
+        await session.commit()
+    async with db_session_factory() as session:
+        use_case = _construir_use_case(session)
+        await use_case.execute(
+            _lectura(timestamp=_BASE + timedelta(hours=2) - timedelta(minutes=5), temperatura_interna=5.0)
+        )
+        await session.commit()
+
     async with db_session_factory() as session:
         use_case = _construir_use_case(session)
         lectura_guardada = await use_case.execute(

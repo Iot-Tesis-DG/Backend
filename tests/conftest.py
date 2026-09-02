@@ -108,5 +108,16 @@ async def token_tecnico(crear_usuario, client):
     return response.json()["access_token"]
 
 
+@pytest_asyncio.fixture
+async def token_auditor(crear_usuario, client):
+    """HU-41: rol Responsable de auditoría."""
+    await crear_usuario("Auditor Test", "auditor@farmacia.example.org", "password123", Rol.AUDITOR)
+    response = client.post(
+        "/api/auth/login", data={"username": "auditor@farmacia.example.org", "password": "password123"}
+    )
+    assert response.status_code == 200
+    return response.json()["access_token"]
+
+
 def auth_header(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}

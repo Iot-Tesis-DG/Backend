@@ -27,6 +27,11 @@ PUBLICOS = {
     # envía): se autentica con un ticket de un solo uso emitido por
     # POST /api/auth/sse-ticket, que sí exige JWT.
     ("GET", "/api/sse/lecturas"): "autenticado por ticket efímero, no por cabecera",
+    # HU-44/HU-10: backend de autenticación HTTP para EMQX Cloud — lo llama
+    # el broker (con el device_id + token del ESP32 en el cuerpo), no un
+    # usuario con sesión. La autorización se verifica dentro del propio caso
+    # de uso (hash del token por dispositivo), no vía JWT.
+    ("POST", "/api/dispositivos/autenticar"): "backend de autenticación del broker MQTT, no un usuario",
 }
 
 # Valores de ejemplo para los parámetros de ruta. El contenido es irrelevante:

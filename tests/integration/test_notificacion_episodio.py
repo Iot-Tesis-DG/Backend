@@ -12,6 +12,7 @@ import pytest
 from src.application.use_cases.generar_alerta import GenerarAlertaUseCase
 from src.domain.entities.alerta_termica import AlertaTermica
 from src.domain.repositories.i_alerta_repository import IAlertaRepository
+from src.domain.value_objects.estado_alerta import EstadoAlerta
 from src.domain.value_objects.nivel_riesgo import NivelRiesgo
 
 DEVICE_ID = "ESP32-NOTIF-01"
@@ -42,7 +43,7 @@ class _RepoEnMemoria(IAlertaRepository):
         ]
         return cerrados[-1] if cerrados else None
 
-    async def listar(self, device_id=None, revisada=None, limite=100, offset=0):
+    async def listar(self, device_id=None, revisada=None, estado=None, limite=100, offset=0):
         return list(self.filas)
 
     async def obtener_por_id(self, alerta_id):
@@ -50,6 +51,14 @@ class _RepoEnMemoria(IAlertaRepository):
 
     async def marcar_revisada(self, alerta_id, usuario_id):
         return None
+
+    async def marcar_atendida_si_no_atendida(self, alerta_id, timestamp) -> bool:
+        alerta = next((a for a in self.filas if a.id == alerta_id), None)
+        if alerta is None or alerta.estado == EstadoAlerta.ATENDIDA:
+            return False
+        alerta.estado = EstadoAlerta.ATENDIDA
+        alerta.atendida_en = timestamp
+        return True
 
 
 class _NotificadorEspia:

@@ -22,6 +22,17 @@ def _payload(**overrides) -> dict:
 
 
 async def test_lectura_persiste_confianza_y_version_del_modelo(client, token_tecnico):
+    # HU-17: la IA necesita 2+ lecturas previas válidas para calcular
+    # tendencia térmica antes de poder clasificar; se siembran dos.
+    for minutos in (10, 5):
+        client.post(
+            "/api/lecturas",
+            json=_payload(
+                timestamp=(datetime.now(tz=timezone.utc) - timedelta(minutes=minutos)).isoformat()
+            ),
+            headers=auth_header(token_tecnico),
+        )
+
     response = client.post("/api/lecturas", json=_payload(), headers=auth_header(token_tecnico))
 
     assert response.status_code == 201

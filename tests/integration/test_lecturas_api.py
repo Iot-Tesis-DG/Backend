@@ -18,6 +18,14 @@ def _payload(**overrides) -> dict:
 
 
 async def test_ingestar_lectura_estable_clasifica_normal(client, token_tecnico):
+    # HU-17: la IA necesita 2+ lecturas previas válidas para tendencia.
+    for _i in range(2):
+        client.post(
+            "/api/lecturas",
+            json=_payload(timestamp=datetime.now(tz=timezone.utc).isoformat()),
+            headers=auth_header(token_tecnico),
+        )
+
     response = client.post("/api/lecturas", json=_payload(), headers=auth_header(token_tecnico))
 
     assert response.status_code == 201
@@ -27,6 +35,9 @@ async def test_ingestar_lectura_estable_clasifica_normal(client, token_tecnico):
 
 
 async def test_ingestar_lectura_excursion_critica(client, token_tecnico):
+    # HU-18/21/34: sin historial, la IA (nivel_riesgo/model_class) legítimamente
+    # queda no_clasificable — pero riesgo_efectivo debe marcar la excursión de
+    # todos modos, vía la regla directa HU-21, independiente de la IA.
     response = client.post(
         "/api/lecturas",
         json=_payload(temperatura_interna=18.0, temperatura_ambiental=20.0),
@@ -34,7 +45,9 @@ async def test_ingestar_lectura_excursion_critica(client, token_tecnico):
     )
 
     assert response.status_code == 201
-    assert response.json()["nivel_riesgo"] == "excursion_critica"
+    body = response.json()
+    assert body["excursion_confirmada"] is True
+    assert body["riesgo_efectivo"] == "excursion_critica"
 
 
 async def test_ingestar_lectura_fuera_de_rango_fisico_es_rechazada(client, token_tecnico):

@@ -128,6 +128,12 @@ def test_ingesta_http_publica_evento_sse(client, token_tecnico, app):
         publicados.append((evento, tipo))
         return await original(evento, tipo)
 
+    # HU-17: 2+ lecturas previas válidas para que la IA pueda calcular
+    # tendencia térmica y esta lectura salga como "lectura" (clasificada),
+    # no "inferencia_omitida".
+    client.post("/api/lecturas", json=_payload(AHORA - timedelta(minutes=10)), headers=auth_header(token_tecnico))
+    client.post("/api/lecturas", json=_payload(AHORA - timedelta(minutes=5)), headers=auth_header(token_tecnico))
+
     broadcaster.publicar = espiar
     try:
         respuesta = client.post(
@@ -152,6 +158,10 @@ def test_ingesta_http_de_excursion_critica_publica_alerta(client, token_tecnico,
     async def espiar(evento, tipo):
         publicados.append((evento, tipo))
         return await original(evento, tipo)
+
+    # HU-17: mismo motivo que en la prueba anterior.
+    client.post("/api/lecturas", json=_payload(AHORA - timedelta(minutes=10)), headers=auth_header(token_tecnico))
+    client.post("/api/lecturas", json=_payload(AHORA - timedelta(minutes=5)), headers=auth_header(token_tecnico))
 
     broadcaster.publicar = espiar
     try:

@@ -133,15 +133,33 @@ async def test_recuperacion_a_normal_cierra_el_episodio():
 
 
 async def test_escalamiento_preventivo_a_critico_cierra_y_abre_nuevo_episodio(db_session_factory):
+    """HU-18/21/34: 9.0 °C ya está fuera de 2-8 °C, así que con la regla
+    directa (HU-21) es una excursión CONFIRMADA de inmediato, no un riesgo
+    preventivo — a diferencia del comportamiento previo, que solo escalaba a
+    crítico según duración/distancia. El escenario preventivo real ahora es
+    una temperatura DENTRO del rango pero cerca del límite (la salvaguarda
+    determinista de clasificar_por_regla garantiza al menos preventivo en esa
+    zona). Se siembran dos lecturas normales primero: HU-17 exige historial
+    para que la IA pueda calcular tendencia térmica antes de clasificar.
+    """
     async with db_session_factory() as session:
         use_case = _construir_use_case(session)
-        # Riesgo preventivo: cerca del límite, breve.
-        await use_case.execute(_lectura(0, temperatura_interna=9.0))
+        await use_case.execute(_lectura(-10, temperatura_interna=5.0))
+        await session.commit()
+    async with db_session_factory() as session:
+        use_case = _construir_use_case(session)
+        await use_case.execute(_lectura(-5, temperatura_interna=5.0))
         await session.commit()
 
     async with db_session_factory() as session:
         use_case = _construir_use_case(session)
-        # Excursión crítica: prolongada.
+        # Riesgo preventivo: dentro de rango, a 0.5 °C del límite superior.
+        await use_case.execute(_lectura(0, temperatura_interna=7.5))
+        await session.commit()
+
+    async with db_session_factory() as session:
+        use_case = _construir_use_case(session)
+        # Excursión crítica confirmada: fuera de rango.
         await use_case.execute(_lectura(1, temperatura_interna=15.0))
         await session.commit()
 
@@ -263,7 +281,8 @@ async def test_ambos_sensores_ausentes_no_ejecuta_inferencia(db_session_factory)
 async def test_sensor_ambiental_ausente_con_historial_aplica_fallback(db_session_factory):
     """Un sensor válido (interna) y el otro ausente (ambiental) SÍ debe poder
     clasificar si hay un valor ambiental previo en el historial (fallback
-    documentado, nunca 0.0)."""
+    documentado, nunca 0.0). HU-17 exige además 2+ lecturas previas válidas
+    para poder calcular tendencia térmica, así que se siembran dos."""
     async with db_session_factory() as session:
         use_case = _construir_use_case(session)
         await use_case.execute(_lectura(0, temperatura_interna=5.0, temperatura_ambiental=21.0))
@@ -271,8 +290,13 @@ async def test_sensor_ambiental_ausente_con_historial_aplica_fallback(db_session
 
     async with db_session_factory() as session:
         use_case = _construir_use_case(session)
+        await use_case.execute(_lectura(1, temperatura_interna=5.0, temperatura_ambiental=21.0))
+        await session.commit()
+
+    async with db_session_factory() as session:
+        use_case = _construir_use_case(session)
         lectura_guardada = await use_case.execute(
-            _lectura(1, temperatura_interna=5.0, temperatura_ambiental=None)
+            _lectura(2, temperatura_interna=5.0, temperatura_ambiental=None)
         )
         await session.commit()
 
@@ -281,8 +305,12 @@ async def test_sensor_ambiental_ausente_con_historial_aplica_fallback(db_session
 
 
 async def test_temperatura_real_0_grados_es_valida_y_critica(db_session_factory):
-    """0.0 °C real (fuera de rango BPA 2-8°C) debe clasificar como riesgo, no
-    tratarse como 'sin dato' (AIV-03)."""
+    """0.0 °C real (fuera de rango BPA 2-8°C) debe registrar riesgo, no
+    tratarse como 'sin dato' (AIV-03) — vía la regla directa HU-21, que es
+    independiente de si la IA pudo clasificar. Es la primera lectura del
+    dispositivo (sin historial), así que la IA legítimamente queda
+    no_clasificable (HU-17: sin datos para tendencia térmica) — lo que NO
+    es aceptable es que la excursión deje de detectarse por eso."""
     async with db_session_factory() as session:
         use_case = _construir_use_case(session)
         lectura_guardada = await use_case.execute(
@@ -290,6 +318,8 @@ async def test_temperatura_real_0_grados_es_valida_y_critica(db_session_factory)
         )
         await session.commit()
 
-    assert lectura_guardada.estado_inferencia == "completada"
-    assert lectura_guardada.nivel_riesgo is not None
-    assert lectura_guardada.nivel_riesgo.value != "normal"
+    assert lectura_guardada.estado_inferencia == "omitida"
+    assert lectura_guardada.nivel_riesgo is None
+    assert lectura_guardada.excursion_confirmada is True
+    assert lectura_guardada.riesgo_efectivo is not None
+    assert lectura_guardada.riesgo_efectivo.value == "excursion_critica"

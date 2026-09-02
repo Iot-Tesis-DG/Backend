@@ -87,7 +87,7 @@ async def test_consumir_mensajes_entrega_cada_mensaje_al_manejador():
     reventaba el consumidor en el primer mensaje."""
     recibidos = []
 
-    async def manejador(mensaje):
+    async def manejador(cliente, mensaje):
         recibidos.append(mensaje)
 
     await mqtt_client.consumir_mensajes(_ClienteFalso([_MensajeFalso(), _MensajeFalso()]), manejador)
@@ -99,7 +99,7 @@ async def test_consumir_mensajes_entrega_cada_mensaje_al_manejador():
 async def test_un_mensaje_que_falla_no_detiene_el_consumo_de_los_siguientes():
     procesados = []
 
-    async def manejador(mensaje):
+    async def manejador(cliente, mensaje):
         procesados.append(mensaje)
         if len(procesados) == 1:
             raise ValueError("payload corrupto")

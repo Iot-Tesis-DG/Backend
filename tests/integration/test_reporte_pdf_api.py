@@ -93,7 +93,14 @@ def test_descargar_pdf_no_dispara_evento_de_corrupcion(
     client, token_farmaceutico, token_admin, token_tecnico
 ):
     """La verificación embebida en el reporte es de solo lectura: no debe
-    insertar eventos de emergencia ni snapshots forenses en la cadena."""
+    insertar eventos de emergencia ni snapshots forenses en la cadena.
+
+    HU-42 (backlog de 51 HU finales): la propia acción de exportar SÍ agrega
+    un evento AUDIT_LOG legítimo a la cadena (la bitácora ahora está
+    encadenada, no es una tabla paralela) — lo que esta prueba verifica es
+    que la verificación de integridad EMBEBIDA en el PDF, en concreto, no
+    agrega eventos de corrupción/emergencia además de ese.
+    """
     _ingestar_lecturas(client, token_tecnico, cantidad=2)
     antes = client.get("/api/trazabilidad", headers=auth_header(token_admin)).json()
 
@@ -104,7 +111,9 @@ def test_descargar_pdf_no_dispara_evento_de_corrupcion(
     )
 
     despues = client.get("/api/trazabilidad", headers=auth_header(token_admin)).json()
-    assert len(despues) == len(antes)
+    nuevos = despues[: len(despues) - len(antes)]
+    assert len(despues) == len(antes) + 1
+    assert all(r["tipo_evento"] == "AUDIT_LOG" for r in nuevos)
     assert not any(r["tipo_evento"] == "CORRUPCION_CADENA_DETECTADA" for r in despues)
 
 
