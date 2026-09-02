@@ -1,4 +1,5 @@
 import contextlib
+import json
 import logging
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -65,7 +66,54 @@ def _device_id_del_topic(topic: str, sufijo: str = "lecturas") -> str | None:
     return partes[1] or None
 
 
-async def _procesar_mensaje_mqtt(message: aiomqtt.Message, broadcaster: SSEBroadcaster) -> None:
+def _topico_ack(device_id: str) -> str:
+    """HU-07: tópico donde el backend confirma, a nivel de aplicación, que una
+    lectura hizo COMMIT en PostgreSQL. El ESP32 debe esperar este mensaje
+    (no solo el PUBACK de transporte) antes de borrar el bloque de LittleFS."""
+    return f"farmacias/{device_id}/ack"
+
+
+async def _publicar_ack_lectura(
+    client: aiomqtt.Client | None,
+    device_id: str,
+    reading_id: str | None,
+    timestamp: datetime,
+    estado: str = "commit_confirmado",
+) -> None:
+    """HU-07 Escenario 1: el acuse lógico se publica DESPUÉS de que la
+    transacción de la lectura ya hizo COMMIT (se llama tras `session.commit()`
+    en `_procesar_lectura_mqtt`), nunca antes. `client=None` en pruebas que
+    invocan el manejador directamente sin un broker real: el acuse se omite
+    sin romper el resto del pipeline, igual que hace `broadcaster.publicar`
+    cuando no hay suscriptores SSE.
+
+    `estado` distingue un COMMIT real (`"commit_confirmado"`) de un rechazo
+    PERMANENTE ya auditado (`estado != "ok"`/dispositivo no autorizado,
+    timestamp inválido): el firmware solo necesita SABER que el backend
+    terminó de procesar esta lectura —para dejar de reintentarla y liberar
+    el bloque de LittleFS— no reinterpretar el motivo. Sin esto, una lectura
+    permanentemente rechazada nunca recibía acuse y el nodo la reintentaba
+    para siempre, bloqueando toda la cola FIFO detrás de ella (core::drenar
+    se detiene en el primer fallo de publicación)."""
+    if client is None:
+        return
+    cuerpo = json.dumps(
+        {
+            "device_id": device_id,
+            "reading_id": reading_id,
+            "timestamp": timestamp.isoformat(),
+            "estado": estado,
+        }
+    )
+    try:
+        await client.publish(_topico_ack(device_id), payload=cuerpo, qos=1)
+    except Exception:  # pragma: no cover - defensa: un fallo de publish no debe tumbar la ingesta
+        logger.exception("No se pudo publicar el acuse lógico MQTT para %s", device_id)
+
+
+async def _procesar_mensaje_mqtt(
+    message: aiomqtt.Message, broadcaster: SSEBroadcaster, client: aiomqtt.Client | None = None
+) -> None:
     """Despacha según el tópico. B-09: los mensajes de `/eventos` tienen su
     propio esquema; antes se validaban contra LecturaPayload, fallaban y se
     descartaban en silencio, así que las desconexiones del nodo nunca se
@@ -73,7 +121,7 @@ async def _procesar_mensaje_mqtt(message: aiomqtt.Message, broadcaster: SSEBroad
     topico = str(message.topic)
     if topico.endswith("/eventos"):
         return await _procesar_evento_mqtt(message, broadcaster)
-    return await _procesar_lectura_mqtt(message, broadcaster)
+    return await _procesar_lectura_mqtt(message, broadcaster, client)
 
 
 async def _procesar_evento_mqtt(message: aiomqtt.Message, broadcaster: SSEBroadcaster) -> None:
@@ -97,7 +145,9 @@ async def _procesar_evento_mqtt(message: aiomqtt.Message, broadcaster: SSEBroadc
 
     async with _session_factory() as session:
         device_repository = SQLAlchemyDeviceRepository(session)
-        auditoria = AuditarAccionCriticaUseCase(SQLAlchemyAuditLogRepository(session))
+        auditoria = AuditarAccionCriticaUseCase(
+                SQLAlchemyAuditLogRepository(session), SQLAlchemyTrazabilidadRepository(session)
+            )
         # Un evento sobre un dispositivo no provisionado no debe crearlo por la
         # puerta de atrás: se audita y se descarta.
         if not await device_repository.existe(evento.device_id):
@@ -125,6 +175,14 @@ async def _procesar_evento_mqtt(message: aiomqtt.Message, broadcaster: SSEBroadc
                 accion, tipo_sse = "DISPOSITIVO_ONLINE", "reconexion"
             case TipoEventoDispositivo.ERROR_SENSOR:
                 accion, tipo_sse = "ERROR_SENSOR", "fallo_sensor"
+            case TipoEventoDispositivo.BUFFER_SATURADO:
+                # HU-06 criterio 3: el `detalle` trae el conteo y el periodo
+                # afectado (lo arma el firmware); aquí solo se audita, no se
+                # reinterpreta — es evidencia de auditoría, no un dato
+                # estructurado sobre el que este backend deba operar.
+                accion, tipo_sse = "BUFFER_SATURADO", "saturacion_buffer"
+            case TipoEventoDispositivo.WIFI_RECONEXION_PROLONGADA:
+                accion, tipo_sse = "WIFI_RECONEXION_PROLONGADA", "reconexion_prolongada"
             case TipoEventoDispositivo.FIRMWARE_UPDATE:
                 if evento.firmware_version:
                     await device_repository.actualizar_firmware_version(
@@ -154,7 +212,9 @@ async def _procesar_evento_mqtt(message: aiomqtt.Message, broadcaster: SSEBroadc
     )
 
 
-async def _procesar_lectura_mqtt(message: aiomqtt.Message, broadcaster: SSEBroadcaster) -> None:
+async def _procesar_lectura_mqtt(
+    message: aiomqtt.Message, broadcaster: SSEBroadcaster, client: aiomqtt.Client | None = None
+) -> None:
     # El tamaño se comprueba ANTES de deserializar: la ingesta MQTT no pasa por
     # el middleware que acota el cuerpo de las peticiones REST, así que este es
     # el único punto donde se puede rechazar un mensaje desmesurado sin haberlo
@@ -196,6 +256,7 @@ async def _procesar_lectura_mqtt(message: aiomqtt.Message, broadcaster: SSEBroad
             registro_dispositivos_estricto=settings.device_registry_estricto,
             audit_log_repository=SQLAlchemyAuditLogRepository(session),
             notificacion_service=NotificacionService(settings),
+            ventana_normalizacion_alerta_minutos=settings.alerta_ventana_normalizacion_minutos,
         )
 
         lectura = LecturaTermica(
@@ -206,6 +267,8 @@ async def _procesar_lectura_mqtt(message: aiomqtt.Message, broadcaster: SSEBroad
             temperatura_interna=payload.temperatura_interna,
             apertura_refrigerador=payload.apertura_refrigerador,
             estado_conectividad=payload.estado_conectividad,
+            reading_id=payload.reading_id,
+            schema_version=payload.schema_version,
             payload=evidencia_edge(
                 firmware_version=payload.firmware_version,
                 duracion_apertura_segundos=payload.duracion_apertura_segundos,
@@ -218,13 +281,22 @@ async def _procesar_lectura_mqtt(message: aiomqtt.Message, broadcaster: SSEBroad
         )
         if existente is not None:
             logger.info("Lectura MQTT duplicada omitida: %s/%s", payload.device_id, payload.timestamp)
+            # HU-07 Escenario 2: el nodo puede reenviar un bloque cuyo COMMIT
+            # ya ocurrió (el acuse anterior se perdió, o reanudó desde un
+            # archivo previo al último confirmado). Confirmar de nuevo permite
+            # que LittleFS lo borre en vez de reintentar indefinidamente.
+            await _publicar_ack_lectura(
+                client, payload.device_id, payload.reading_id or existente.reading_id, payload.timestamp
+            )
             return
 
         episodio_previo = await alerta_repository.obtener_episodio_abierto(payload.device_id)
         try:
             lectura_guardada = await use_case.execute(lectura)
         except DispositivoNoAutorizadoError:
-            auditoria = AuditarAccionCriticaUseCase(SQLAlchemyAuditLogRepository(session))
+            auditoria = AuditarAccionCriticaUseCase(
+                SQLAlchemyAuditLogRepository(session), SQLAlchemyTrazabilidadRepository(session)
+            )
             await auditoria.execute(
                 usuario_id=None,
                 accion="DISPOSITIVO_RECHAZADO",
@@ -234,6 +306,13 @@ async def _procesar_lectura_mqtt(message: aiomqtt.Message, broadcaster: SSEBroad
             )
             await session.commit()
             logger.warning("Dispositivo no registrado rechazado: %s", payload.device_id)
+            # HU-07: rechazo PERMANENTE ya auditado — sin acuse, el firmware
+            # reintentaría este bloque para siempre y bloquearía toda la cola
+            # FIFO detrás de él.
+            await _publicar_ack_lectura(
+                client, payload.device_id, payload.reading_id, payload.timestamp,
+                estado="dispositivo_no_autorizado",
+            )
             return
         except LecturaInvalidaError as exc:
             # El caso de uso ya dejó el motivo del rechazo en audit_logs (p. ej.
@@ -243,9 +322,22 @@ async def _procesar_lectura_mqtt(message: aiomqtt.Message, broadcaster: SSEBroad
             logger.warning(
                 "Lectura inválida descartada para device %s: %s", payload.device_id, exc
             )
+            # HU-07: mismo motivo que arriba — rechazo permanente, no un fallo
+            # transitorio, así que también necesita acuse para liberar LittleFS.
+            await _publicar_ack_lectura(
+                client, payload.device_id, payload.reading_id, payload.timestamp,
+                estado="lectura_invalida",
+            )
             return
         episodio_actual = await alerta_repository.obtener_episodio_abierto(payload.device_id)
         await session.commit()
+
+    # HU-07 Escenario 1: el acuse lógico se publica DESPUÉS del COMMIT, nunca
+    # antes ni en su lugar. Es lo único que autoriza al firmware a borrar el
+    # bloque correspondiente de LittleFS.
+    await _publicar_ack_lectura(
+        client, lectura_guardada.device_id, lectura_guardada.reading_id, lectura_guardada.timestamp
+    )
 
     evento_lectura = lectura_to_response(lectura_guardada).model_dump(mode="json")
     if lectura_guardada.estado_inferencia == "omitida":
@@ -254,9 +346,12 @@ async def _procesar_lectura_mqtt(message: aiomqtt.Message, broadcaster: SSEBroad
         tipo = "lectura"
     await broadcaster.publicar(evento_lectura, tipo)
 
-    if lectura_guardada.nivel_riesgo is not None and episodio_previo is not None and episodio_actual is None:
+    # HU-18/21/34: se sigue riesgo_efectivo, no nivel_riesgo/model_class —
+    # una excursión confirmada por rango abre/mantiene episodio de alerta
+    # aunque la IA no haya podido clasificar la lectura.
+    if lectura_guardada.riesgo_efectivo is not None and episodio_previo is not None and episodio_actual is None:
         await broadcaster.publicar(evento_lectura, "recuperacion")
-    elif lectura_guardada.nivel_riesgo is not None and episodio_actual is not None:
+    elif lectura_guardada.riesgo_efectivo is not None and episodio_actual is not None:
         tipo_episodio = "alerta" if episodio_previo is None else "episodio_actualizado"
         await broadcaster.publicar(
             {
@@ -277,8 +372,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if settings.mqtt_enabled and settings.environment != "test":
 
-        async def manejador(message: aiomqtt.Message) -> None:
-            await _procesar_mensaje_mqtt(message, app.state.sse_broadcaster)
+        async def manejador(client: aiomqtt.Client, message: aiomqtt.Message) -> None:
+            await _procesar_mensaje_mqtt(message, app.state.sse_broadcaster, client)
 
         # La conexión y sus reintentos viven dentro de la tarea consumidora, así
         # que el arranque nunca se bloquea ni se cae por un broker inaccesible.

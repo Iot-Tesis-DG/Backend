@@ -100,6 +100,12 @@ class DesactivarUsuarioRequest(_PeticionEstricta):
     motivo: str = Field(min_length=1, max_length=50)
 
 
+class CambiarRolUsuarioRequest(_PeticionEstricta):
+    """HU-41: petición para asignar/modificar el rol de un usuario existente."""
+
+    rol: Rol
+
+
 class LecturaIngestRequest(_PeticionEstricta):
     """Espejo de src.infrastructure.mqtt.payload_schema.LecturaPayload para ingesta vía REST."""
 
@@ -123,7 +129,13 @@ class LecturaResponse(BaseModel):
     temperatura_ambiental: float | None
     humedad_ambiental: float | None
     temperatura_interna: float | None
-    apertura_refrigerador: bool
+    # HU-04: None cuando el dispositivo no tiene MC-38 instalado.
+    apertura_refrigerador: bool | None
+    # HU-35: duración acumulada de ESTA apertura, tal como la reporta el nodo
+    # (ver evidencia_edge() más abajo) — sin este campo el frontend no podía
+    # distinguir una apertura de 5 s de una de 10 min para avisar del umbral.
+    # None si el dispositivo no reportó el campo (firmware desactualizado).
+    duracion_apertura_segundos: int | None = None
     estado_conectividad: str
     nivel_riesgo: NivelRiesgo | None
     # Evidencia de la inferencia de IA (RNF-04, corrige hallazgo AI-07 de la
@@ -139,6 +151,17 @@ class LecturaResponse(BaseModel):
     estado_inferencia: str | None = None
     motivo_no_inferencia: str | None = None
     estado_sensores: dict[str, str] | None = None
+    # HU-05: identidad lógica declarada por el firmware (None en payloads
+    # de dispositivos aún no actualizados) y versión del contrato de payload.
+    reading_id: str | None = None
+    schema_version: int | None = None
+    # HU-18/21/34: `nivel_riesgo` arriba sigue siendo model_class (la clase
+    # cruda del pipeline IA/salvaguarda). `excursion_confirmada` y
+    # `riesgo_efectivo` son los dos conceptos adicionales que el backlog
+    # exige mantener separados — el frontend no debe inferir una excursión
+    # confirmada a partir de nivel_riesgo=excursion_critica por sí solo.
+    excursion_confirmada: bool = False
+    riesgo_efectivo: NivelRiesgo | None = None
 
 
 class AlertaResponse(BaseModel):
@@ -156,9 +179,19 @@ class AlertaResponse(BaseModel):
     lectura_mas_reciente_id: UUID | None = None
     ultima_actualizacion: datetime | None = None
     cerrada_en: datetime | None = None
+    # HU-23: máquina de estados pendiente/reconocida/atendida.
+    estado: str = "pendiente"
+    reconocida_en: datetime | None = None
+    atendida_en: datetime | None = None
 
 
 class AccionCorrectivaCreateRequest(_PeticionEstricta):
+    descripcion: str = Field(min_length=1, max_length=2000)
+
+
+class AccionCorrectivaRectificarRequest(_PeticionEstricta):
+    """HU-28: nueva justificación que corrige la anterior."""
+
     descripcion: str = Field(min_length=1, max_length=2000)
 
 
@@ -168,6 +201,7 @@ class AccionCorrectivaResponse(BaseModel):
     usuario_id: UUID
     descripcion: str
     created_at: datetime | None = None
+    corrige_accion_id: UUID | None = None
 
 
 class TrazabilidadResponse(BaseModel):
@@ -200,6 +234,25 @@ class VerificacionIntegridadResponse(BaseModel):
 
 class EstadoCadenaResponse(BaseModel):
     cadena_comprometida: bool
+
+
+class EstadoRegistroSegmentoResponse(BaseModel):
+    id: UUID
+    tipo_evento: str
+    timestamp: datetime
+    integro: bool
+
+
+class VerificacionSegmentoResponse(BaseModel):
+    """HU-37: verificación de integridad acotada a un dispositivo y periodo."""
+
+    device_id: str
+    desde: datetime
+    hasta: datetime
+    integra: bool
+    total_bloques_verificados: int
+    registros_del_dispositivo: list[EstadoRegistroSegmentoResponse]
+    primer_registro_inconsistente: UUID | None = None
 
 
 class ReporteBPAResponse(BaseModel):
@@ -236,12 +289,120 @@ class DispositivoResponse(BaseModel):
     numero_certificado_calibracion: str | None = None
     fecha_proxima_calibracion: date | None = None
     observaciones_calibracion: str | None = None
+    # HU-44/HU-10: estado de la credencial MQTT (nunca el token en sí).
+    mqtt_token_activo: bool = False
+    mqtt_credencial_actualizada_en: datetime | None = None
+    # HU-43/HU-51: sensores habilitados y metadatos de instalación.
+    sensores_habilitados: list[str] = Field(default_factory=list)
+    fecha_instalacion: date | None = None
+    instalado_por: UUID | None = None
+    observaciones_instalacion: str | None = None
 
 
 class DispositivoBajaRequest(_PeticionEstricta):
     motivo: str = Field(min_length=1, max_length=50)
     descripcion: str | None = Field(default=None, max_length=2000)
     device_id_reemplazo: str | None = Field(default=None, max_length=50)
+
+
+class DispositivoAltaRequest(_PeticionEstricta):
+    """HU-43: alta explícita de un dispositivo nuevo."""
+
+    device_id: str = Field(min_length=1, max_length=50)
+    nombre: str | None = Field(default=None, max_length=120)
+    ubicacion: str | None = Field(default=None, max_length=200)
+    sensores_habilitados: list[str] = Field(default_factory=list)
+
+
+class InstalacionDispositivoRequest(_PeticionEstricta):
+    """HU-51: ubicación y metadatos de instalación del sensor."""
+
+    ubicacion: str | None = Field(default=None, max_length=200)
+    fecha_instalacion: date | None = None
+    observaciones: str | None = Field(default=None, max_length=2000)
+
+
+class HistorialConfiguracionResponse(BaseModel):
+    id: UUID
+    device_id: str
+    campo: str
+    valor_anterior: str | None
+    valor_nuevo: str | None
+    actor_id: UUID | None
+    created_at: datetime
+
+
+class RotarCredencialRequest(_PeticionEstricta):
+    motivo: str = Field(min_length=1, max_length=200)
+
+
+class RevocarCredencialRequest(_PeticionEstricta):
+    motivo: str = Field(min_length=1, max_length=200)
+
+
+class CredencialDispositivoResponse(BaseModel):
+    """El token en claro solo aparece aquí, en la respuesta de rotación, y
+    nunca más — el backend solo conserva su hash."""
+
+    device_id: str
+    token: str
+    generado_en: datetime
+
+
+class AutenticarDispositivoRequest(BaseModel):
+    """Sin _PeticionEstricta: la llama EMQX Cloud (webhook de autenticación
+    HTTP), no un cliente de este backend con sesión."""
+
+    device_id: str = Field(min_length=1, max_length=50)
+    token: str = Field(min_length=1, max_length=200)
+
+
+class AutenticarDispositivoResponse(BaseModel):
+    autorizado: bool
+
+
+class RegistrarVersionModeloRequest(_PeticionEstricta):
+    """HU-46: metadatos de reproducibilidad de una versión entrenada."""
+
+    version: str = Field(min_length=1, max_length=50)
+    model_hash: str = Field(min_length=64, max_length=64)
+    feature_schema_version: str = Field(min_length=1, max_length=20)
+    dataset_version: str = Field(min_length=1, max_length=50)
+    scikit_learn_version: str = Field(min_length=1, max_length=20)
+    python_version: str = Field(min_length=1, max_length=20)
+    trained_at: datetime
+
+
+class VersionModeloResponse(BaseModel):
+    id: UUID | None = None
+    version: str
+    model_hash: str
+    feature_schema_version: str
+    dataset_version: str
+    scikit_learn_version: str
+    python_version: str
+    trained_at: datetime
+    aprobado_por: UUID
+    aprobado_en: datetime | None = None
+    activa: bool
+    activada_en: datetime | None = None
+    desactivada_en: datetime | None = None
+
+
+class InferenciaLecturaResponse(BaseModel):
+    """HU-47: vista de solo lectura — no existe endpoint de escritura para
+    este recurso, así que no hay forma de modificarlo vía la API."""
+
+    lectura_id: UUID | None
+    device_id: str
+    timestamp_inferencia: datetime
+    modelo_version: str | None
+    vector_features: dict[str, float] | None
+    probabilidades_por_clase: dict[str, float] | None
+    clasificacion_final: NivelRiesgo | None
+    confianza: float | None
+    origen_clasificacion: str | None
+    version_era_activa_y_aprobada_en_ese_momento: bool | None
 
 
 class FirmwareReleaseCreateRequest(_PeticionEstricta):

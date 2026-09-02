@@ -17,7 +17,7 @@ alerta → evento SSE.
 import asyncio
 import inspect
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiomqtt
 import pytest
@@ -61,6 +61,8 @@ class _BrokerFalso:
         self._error = error_al_terminar
         self.suscripciones: list[str] = []
         self.conexiones = 0
+        # HU-07: acuses lógicos que el backend publicó de vuelta al firmware.
+        self.acks_publicados: list[tuple[str, str]] = []
 
     async def __aenter__(self):
         self.conexiones += 1
@@ -71,6 +73,9 @@ class _BrokerFalso:
 
     async def subscribe(self, topic):
         self.suscripciones.append(topic)
+
+    async def publish(self, topic, payload=None, qos=0, **_kwargs):
+        self.acks_publicados.append((topic, payload))
 
     @property
     def messages(self):
@@ -129,8 +134,8 @@ async def _consumir(mensajes, broadcaster) -> _BrokerFalso:
 
     broker = _BrokerFalso(mensajes)
 
-    async def manejador(mensaje):
-        await main._procesar_mensaje_mqtt(mensaje, broadcaster)
+    async def manejador(cliente, mensaje):
+        await main._procesar_mensaje_mqtt(mensaje, broadcaster, cliente)
 
     await mqtt_client.consumir_mensajes(broker, manejador)
     return broker
@@ -152,12 +157,32 @@ async def _alertas(factory):
 @pytest.mark.asyncio
 async def test_lectura_normal_recorre_todo_el_camino(entorno):
     """ESP32 → broker → validación → IA → persistencia → SSE."""
-    broadcaster = _BroadcasterEspia()
+    broadcaster_previa = _BroadcasterEspia()
+    # HU-17: la IA necesita 2+ lecturas previas válidas para tendencia.
+    ahora = datetime.now(tz=timezone.utc)
+    await _consumir(
+        [
+            _MensajeFalso(
+                TOPIC,
+                _payload_firmware(
+                    timestamp=(ahora - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                ),
+            ),
+            _MensajeFalso(
+                TOPIC,
+                _payload_firmware(
+                    timestamp=(ahora - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                ),
+            ),
+        ],
+        broadcaster_previa,
+    )
 
+    broadcaster = _BroadcasterEspia()
     await _consumir([_MensajeFalso(TOPIC, _payload_firmware())], broadcaster)
 
     lecturas = await _lecturas(entorno)
-    assert len(lecturas) == 1
+    assert len(lecturas) == 3
     assert lecturas[0].temperatura_interna == pytest.approx(4.53)
     # La clasificación se ejecutó de verdad: hay veredicto y evidencia de IA.
     assert lecturas[0].nivel_riesgo is not None
@@ -166,8 +191,53 @@ async def test_lectura_normal_recorre_todo_el_camino(entorno):
 
 
 @pytest.mark.asyncio
+async def test_duracion_apertura_llega_al_evento_sse(entorno):
+    """HU-35: el frontend necesita `duracion_apertura_segundos` para avisar
+    de una puerta abierta más allá del umbral — antes se guardaba en el
+    `payload` JSONB pero nunca salía de ahí hacia la API/SSE."""
+    broadcaster = _BroadcasterEspia()
+    await _consumir(
+        [
+            _MensajeFalso(
+                TOPIC,
+                _payload_firmware(apertura_refrigerador=True, duracion_apertura_segundos=185),
+            )
+        ],
+        broadcaster,
+    )
+
+    assert len(broadcaster.publicados) == 1
+    evento, _tipo = broadcaster.publicados[0]
+    assert evento["apertura_refrigerador"] is True
+    assert evento["duracion_apertura_segundos"] == 185
+
+
+@pytest.mark.asyncio
 async def test_excursion_critica_genera_alerta_y_evento_sse(entorno):
     """RF-08/RF-09/RF-11: 19.9 °C es una excursión inequívoca."""
+    broadcaster_previa = _BroadcasterEspia()
+    # HU-17: la IA necesita 2+ lecturas previas válidas para tendencia (el
+    # que la excursión SIGA detectándose sin esto ya lo cubre HU-21 en otra
+    # prueba; aquí se conserva el escenario original con IA completada).
+    ahora = datetime.now(tz=timezone.utc)
+    await _consumir(
+        [
+            _MensajeFalso(
+                TOPIC,
+                _payload_firmware(
+                    timestamp=(ahora - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                ),
+            ),
+            _MensajeFalso(
+                TOPIC,
+                _payload_firmware(
+                    timestamp=(ahora - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                ),
+            ),
+        ],
+        broadcaster_previa,
+    )
+
     broadcaster = _BroadcasterEspia()
 
     await _consumir(
@@ -316,7 +386,7 @@ async def test_la_ingesta_se_reanuda_tras_una_caida_del_broker(monkeypatch):
     monkeypatch.setattr(mqtt_client, "RECONEXION_ESPERA_INICIAL_SEGUNDOS", 0.001)
     monkeypatch.setattr(mqtt_client, "RECONEXION_ESPERA_MAXIMA_SEGUNDOS", 0.001)
 
-    async def manejador(mensaje):
+    async def manejador(cliente, mensaje):
         recibidos.append(json.loads(mensaje.payload)["temperatura_interna"])
 
     from src.infrastructure.config import get_settings
@@ -341,7 +411,7 @@ async def test_al_conectar_se_suscribe_a_lecturas_y_a_eventos(monkeypatch):
 
     from src.infrastructure.config import get_settings
 
-    async def manejador(mensaje):  # pragma: no cover
+    async def manejador(cliente, mensaje):  # pragma: no cover
         return None
 
     await mqtt_client._sesion_una_vez(get_settings(), manejador)

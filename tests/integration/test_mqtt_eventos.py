@@ -113,6 +113,52 @@ async def test_error_sensor_se_audita_con_detalle(sesion_con_device):
 
 
 @pytest.mark.asyncio
+async def test_buffer_saturado_se_audita_con_periodo(sesion_con_device):
+    """HU-06 criterio 3: la pérdida de lecturas por saturación del buffer
+    offline no puede quedar silenciosa — debe auditarse con el periodo
+    afectado que reporta el firmware en `detalle`."""
+    broadcaster = _BroadcasterEspia()
+    mensaje = _MensajeFalso(
+        f"farmacias/{DEVICE_ID}/eventos",
+        _evento(
+            "buffer_saturado",
+            detalle="12 lectura(s) descartada(s) por saturacion del buffer offline, "
+            "periodo 2026-08-01T10:00:00Z a 2026-08-01T10:06:00Z",
+        ),
+    )
+    await _procesar_mensaje_mqtt(mensaje, broadcaster)
+
+    assert [tipo for _, tipo in broadcaster.publicados] == ["saturacion_buffer"]
+    entradas = [e for e in await _auditoria(sesion_con_device) if e["accion"] == "BUFFER_SATURADO"]
+    assert len(entradas) == 1
+    assert "periodo 2026-08-01T10:00:00Z" in entradas[0]["detalle"]["detalle"]
+
+
+@pytest.mark.asyncio
+async def test_wifi_reconexion_prolongada_se_audita(sesion_con_device):
+    """HU-08 criterio 3: superar el umbral operativo de reintentos Wi-Fi debe
+    dejar una señal de diagnóstico observable — aquí, auditada al reconectar
+    (es el primer momento en que el nodo vuelve a tener red para avisar)."""
+    broadcaster = _BroadcasterEspia()
+    mensaje = _MensajeFalso(
+        f"farmacias/{DEVICE_ID}/eventos",
+        _evento(
+            "wifi_reconexion_prolongada",
+            detalle="Reconectado tras 7 intento(s) fallido(s) (63 s sin red). "
+            "Umbral de diagnostico: 5",
+        ),
+    )
+    await _procesar_mensaje_mqtt(mensaje, broadcaster)
+
+    assert [tipo for _, tipo in broadcaster.publicados] == ["reconexion_prolongada"]
+    entradas = [
+        e for e in await _auditoria(sesion_con_device) if e["accion"] == "WIFI_RECONEXION_PROLONGADA"
+    ]
+    assert len(entradas) == 1
+    assert "7 intento(s)" in entradas[0]["detalle"]["detalle"]
+
+
+@pytest.mark.asyncio
 async def test_firmware_update_actualiza_version(sesion_con_device):
     broadcaster = _BroadcasterEspia()
     mensaje = _MensajeFalso(
@@ -196,4 +242,10 @@ async def test_las_lecturas_siguen_llegando_a_su_manejador(sesion_con_device):
     )
     await _procesar_mensaje_mqtt(_MensajeFalso(f"farmacias/{DEVICE_ID}/lecturas", cuerpo), broadcaster)
 
-    assert [tipo for _, tipo in broadcaster.publicados] == ["lectura"]
+    # HU-17: sin historial previo (dispositivo recién conectado) no hay forma
+    # de calcular una tendencia térmica real; la lectura se persiste pero
+    # queda no_clasificable en vez de imputar una tendencia de 0.0 — por eso
+    # el tipo de evento SSE es "inferencia_omitida", no "lectura". El punto
+    # de esta prueba (que el despacho por tópico siga entregando lecturas al
+    # manejador) sigue cumplido: el evento llegó.
+    assert [tipo for _, tipo in broadcaster.publicados] == ["inferencia_omitida"]

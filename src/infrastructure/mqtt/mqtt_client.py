@@ -20,7 +20,13 @@ TOPIC_EVENTOS = "farmacias/+/eventos"
 RECONEXION_ESPERA_INICIAL_SEGUNDOS = 1.0
 RECONEXION_ESPERA_MAXIMA_SEGUNDOS = 60.0
 
-MensajeHandler = Callable[[aiomqtt.Message], Awaitable[None]]
+# HU-07: el manejador recibe también el cliente activo, no solo el mensaje.
+# El buffer offline del ESP32 (LittleFS) solo debe borrar un bloque cuando el
+# backend confirma que la lectura hizo COMMIT en PostgreSQL — un PUBACK de
+# MQTT QoS1 por sí solo únicamente confirma que el broker recibió el
+# paquete, no que la base de datos lo persistió. Sin acceso al cliente aquí,
+# el manejador no tendría forma de publicar ese acuse lógico de aplicación.
+MensajeHandler = Callable[[aiomqtt.Client, aiomqtt.Message], Awaitable[None]]
 
 
 def build_ssl_context(tls_enabled: bool) -> ssl.SSLContext | None:
@@ -56,7 +62,7 @@ async def consumir_mensajes(client: aiomqtt.Client, manejador: MensajeHandler) -
     # En aiomqtt 2.x `messages` es una propiedad, no un método.
     async for message in client.messages:
         try:
-            await manejador(message)
+            await manejador(client, message)
         except Exception:
             # No se propaga (un mensaje malformado o un error inesperado del
             # pipeline —incluida la inferencia de IA— no debe tumbar el

@@ -38,9 +38,18 @@ class RegistrarLecturaTermicaUseCase:
         registro_dispositivos_estricto: bool = False,
         audit_log_repository: IAuditLogRepository | None = None,
         notificacion_service: "NotificacionService | None" = None,
+        ventana_normalizacion_alerta_minutos: int | None = None,
     ) -> None:
         self._lectura_repository = lectura_repository
-        self._generar_alerta = GenerarAlertaUseCase(alerta_repository, notificacion_service)
+        self._generar_alerta = GenerarAlertaUseCase(
+            alerta_repository,
+            notificacion_service,
+            **(
+                {"ventana_normalizacion_minutos": ventana_normalizacion_alerta_minutos}
+                if ventana_normalizacion_alerta_minutos is not None
+                else {}
+            ),
+        )
         self._registrar_hash = RegistrarHashEncadenadoUseCase(trazabilidad_repository)
         self._clasificar_riesgo = clasificar_riesgo_use_case
         self._device_repository = device_repository
@@ -111,6 +120,20 @@ class RegistrarLecturaTermicaUseCase:
         lectura.origen_clasificacion = clasificacion.origen
         lectura.estado_inferencia = clasificacion.estado_inferencia
         lectura.motivo_no_inferencia = clasificacion.motivo_no_inferencia
+        # HU-47: evidencia completa de la inferencia (probabilidad por clase
+        # y vector de features), para la vista de auditoría por lectura.
+        lectura.probabilidades_ia = clasificacion.probabilidades_por_clase
+        lectura.vector_features_ia = clasificacion.vector_features
+
+        # HU-18/21/34: excursión confirmada y riesgo efectivo se calculan
+        # SIEMPRE aquí, sobre la lectura ya validada como físicamente
+        # plausible — independientemente de si la IA pudo clasificar o no.
+        # Esto es lo que garantiza que HU-21 sea "independiente de la
+        # predicción del modelo": aunque nivel_riesgo (model_class) quede en
+        # None por no_clasificable, una temperatura fuera de 2-8 °C sigue
+        # marcando excursion_confirmada=True y riesgo_efectivo=critica.
+        lectura.excursion_confirmada = lectura.es_excursion_confirmada()
+        lectura.riesgo_efectivo = lectura.calcular_riesgo_efectivo()
 
         lectura_guardada = await self._lectura_repository.agregar(lectura)
 
@@ -127,6 +150,15 @@ class RegistrarLecturaTermicaUseCase:
                 "nivel_riesgo": lectura_guardada.nivel_riesgo.value
                 if lectura_guardada.nivel_riesgo is not None
                 else None,
+                # HU-05: identidad lógica de la lectura declarada por el
+                # firmware (None en dispositivos aún no actualizados).
+                "reading_id": lectura_guardada.reading_id,
+                # HU-18/21/34: model_class (arriba) vs. los dos conceptos
+                # distintos que exige el backlog — nunca se colapsan en uno.
+                "excursion_confirmada": lectura_guardada.excursion_confirmada,
+                "riesgo_efectivo": lectura_guardada.riesgo_efectivo.value
+                if lectura_guardada.riesgo_efectivo is not None
+                else None,
                 # Evidencia de la inferencia (RNF-04 / supervisión de la IA).
                 "confianza_ia": lectura_guardada.confianza_ia,
                 "origen_clasificacion": clasificacion.origen,
@@ -138,16 +170,18 @@ class RegistrarLecturaTermicaUseCase:
             timestamp=lectura_guardada.timestamp,
         )
 
-        # AIV-02: se evalúa el episodio de alerta para TODA lectura
-        # clasificada (incluida "normal", que puede cerrar un episodio
-        # abierto como evento de recuperación) — no solo para las críticas.
-        # Una lectura sin dato de sensor (nivel_riesgo=None) no se evalúa:
-        # no hay evidencia de que el riesgo se haya resuelto.
-        if lectura_guardada.nivel_riesgo is not None and lectura_guardada.id is not None:
+        # AIV-02 + HU-21: se evalúa el episodio de alerta para TODA lectura
+        # con riesgo_efectivo resuelto (incluido "normal", que puede cerrar
+        # un episodio abierto como evento de recuperación) — no solo para las
+        # críticas. Se usa riesgo_efectivo, NO nivel_riesgo/model_class: una
+        # excursión confirmada por rango debe generar alerta crítica aunque
+        # la IA no haya podido clasificar (no_clasificable, nivel_riesgo=None)
+        # — es precisamente lo que hace a HU-21 independiente de la IA.
+        if lectura_guardada.riesgo_efectivo is not None and lectura_guardada.id is not None:
             alerta = await self._generar_alerta.execute(
                 reading_id=lectura_guardada.id,
                 device_id=lectura_guardada.device_id,
-                nivel_riesgo=lectura_guardada.nivel_riesgo,
+                nivel_riesgo=lectura_guardada.riesgo_efectivo,
                 timestamp=lectura_guardada.timestamp,
                 temperatura_interna=lectura_guardada.temperatura_interna,
             )
@@ -157,7 +191,8 @@ class RegistrarLecturaTermicaUseCase:
                     payload={
                         "reading_id": str(lectura_guardada.id),
                         "device_id": lectura_guardada.device_id,
-                        "nivel_riesgo": lectura_guardada.nivel_riesgo.value,
+                        "nivel_riesgo": lectura_guardada.riesgo_efectivo.value,
+                        "excursion_confirmada": lectura_guardada.excursion_confirmada,
                         "mensaje": alerta.mensaje,
                         "modelo_version": lectura_guardada.modelo_version,
                         "confianza_ia": lectura_guardada.confianza_ia,

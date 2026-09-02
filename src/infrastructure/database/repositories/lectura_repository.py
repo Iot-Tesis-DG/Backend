@@ -27,6 +27,12 @@ def _to_entity(model: ThermalReadingModel) -> LecturaTermica:
         origen_clasificacion=model.origen_clasificacion,
         estado_inferencia=model.estado_inferencia,
         motivo_no_inferencia=model.motivo_no_inferencia,
+        reading_id=model.reading_id,
+        schema_version=model.schema_version,
+        excursion_confirmada=model.excursion_confirmada,
+        riesgo_efectivo=NivelRiesgo(model.riesgo_efectivo) if model.riesgo_efectivo else None,
+        probabilidades_ia=model.probabilidades_ia,
+        vector_features_ia=model.vector_features_ia,
     )
 
 
@@ -57,6 +63,12 @@ class SQLAlchemyLecturaRepository(ILecturaRepository):
             origen_clasificacion=lectura.origen_clasificacion,
             estado_inferencia=lectura.estado_inferencia,
             motivo_no_inferencia=lectura.motivo_no_inferencia,
+            reading_id=lectura.reading_id,
+            schema_version=lectura.schema_version,
+            excursion_confirmada=lectura.excursion_confirmada,
+            riesgo_efectivo=lectura.riesgo_efectivo.value if lectura.riesgo_efectivo else None,
+            probabilidades_ia=lectura.probabilidades_ia,
+            vector_features_ia=lectura.vector_features_ia,
         )
         self._session.add(model)
         await self._session.flush()

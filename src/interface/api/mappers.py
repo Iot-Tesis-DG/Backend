@@ -29,6 +29,16 @@ def evidencia_edge(
     }
 
 
+def _duracion_apertura(payload: dict | None) -> int | None:
+    """HU-35: extrae `duracion_apertura_segundos` de la evidencia edge
+    guardada en `payload` (ver `evidencia_edge()` arriba). Devuelve None si
+    falta o no es un entero — nunca 0 como valor inventado."""
+    if not payload:
+        return None
+    valor = payload.get("duracion_apertura_segundos")
+    return valor if isinstance(valor, int) and not isinstance(valor, bool) else None
+
+
 def lectura_to_response(lectura: LecturaTermica) -> LecturaResponse:
     return LecturaResponse(
         id=lectura.id,
@@ -38,6 +48,7 @@ def lectura_to_response(lectura: LecturaTermica) -> LecturaResponse:
         humedad_ambiental=lectura.humedad_ambiental,
         temperatura_interna=lectura.temperatura_interna,
         apertura_refrigerador=lectura.apertura_refrigerador,
+        duracion_apertura_segundos=_duracion_apertura(lectura.payload),
         estado_conectividad=lectura.estado_conectividad,
         nivel_riesgo=lectura.nivel_riesgo,
         confianza_ia=lectura.confianza_ia,
@@ -46,6 +57,10 @@ def lectura_to_response(lectura: LecturaTermica) -> LecturaResponse:
         origen_clasificacion=lectura.origen_clasificacion,
         estado_inferencia=lectura.estado_inferencia,
         motivo_no_inferencia=lectura.motivo_no_inferencia,
+        reading_id=lectura.reading_id,
+        schema_version=lectura.schema_version,
+        excursion_confirmada=lectura.excursion_confirmada,
+        riesgo_efectivo=lectura.riesgo_efectivo,
         estado_sensores={
             "temperatura_interna": _estado_sensor(lectura.temperatura_interna, -55.0, 125.0),
             "temperatura_ambiental": _estado_sensor(lectura.temperatura_ambiental, -40.0, 125.0),
@@ -69,6 +84,9 @@ def alerta_to_response(alerta: AlertaTermica) -> AlertaResponse:
         lectura_mas_reciente_id=alerta.lectura_mas_reciente_id,
         ultima_actualizacion=alerta.ultima_actualizacion,
         cerrada_en=alerta.cerrada_en,
+        estado=alerta.estado.value,
+        reconocida_en=alerta.reconocida_en,
+        atendida_en=alerta.atendida_en,
     )
 
 
