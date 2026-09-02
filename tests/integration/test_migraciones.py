@@ -131,15 +131,39 @@ def test_indices_de_consulta_existen(base_temporal):
         assert indice in nombres, f"falta el índice {indice} en {tabla}"
 
 
+def _esquema_completo(engine) -> dict[str, set[tuple[str, bool]]]:
+    """Todas las tablas y sus columnas (nombre, nullable), para comparar el
+    esquema entero sin atarse a los nombres de columna de la migración que
+    sea la última hoy. Incluye `nullable` porque no toda migración agrega o
+    quita columnas — algunas solo relajan/endurecen una restricción (p. ej.
+    0012_hu04_mc38_ausente), y esa diferencia también debe sobrevivir un
+    downgrade+upgrade."""
+    inspector = inspect(engine)
+    return {
+        tabla: {(c["name"], c["nullable"]) for c in inspector.get_columns(tabla)}
+        for tabla in inspector.get_table_names()
+    }
+
+
 def test_downgrade_deshace_la_ultima_migracion(base_temporal):
-    """Una migración sin downgrade correcto deja el despliegue sin salida
-    si hay que revertir."""
+    """Una migración sin downgrade correcto deja el despliegue sin salida si
+    hay que revertir: downgrade(-1) seguido de upgrade(head) debe devolver
+    EXACTAMENTE el mismo esquema que un upgrade(head) directo — sin importar
+    cuál sea la última migración en cada momento (no se ata a sus nombres de
+    columna, así no hay que reescribir esta prueba cada vez que se agrega
+    una migración nueva)."""
     config = _configuracion_alembic(base_temporal)
     command.upgrade(config, "head")
-    command.downgrade(config, "-1")
+    esquema_tras_upgrade_directo = _esquema_completo(create_engine(base_temporal))
 
-    inspector = inspect(create_engine(base_temporal))
-    assert "checklist_bpa" not in inspector.get_table_names()
+    command.downgrade(config, "-1")
+    esquema_tras_downgrade = _esquema_completo(create_engine(base_temporal))
+    assert esquema_tras_downgrade != esquema_tras_upgrade_directo, (
+        "el downgrade no cambió el esquema en absoluto — probablemente no está implementado"
+    )
 
     command.upgrade(config, "head")
-    assert "checklist_bpa" in inspect(create_engine(base_temporal)).get_table_names()
+    esquema_tras_reupgrade = _esquema_completo(create_engine(base_temporal))
+    assert esquema_tras_reupgrade == esquema_tras_upgrade_directo, (
+        "downgrade(-1) + upgrade(head) no reproduce el esquema original"
+    )

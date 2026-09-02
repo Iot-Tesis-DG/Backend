@@ -5,6 +5,7 @@ from numbers import Real
 from uuid import UUID
 
 from src.domain.value_objects.nivel_riesgo import NivelRiesgo
+from src.domain.value_objects.rango_termico import RANGO_TERMICO_BPA
 
 # B-10 — ventana temporal admisible de una lectura entrante.
 #
@@ -31,7 +32,9 @@ class LecturaTermica:
     temperatura_ambiental: float | None
     humedad_ambiental: float | None
     temperatura_interna: float | None
-    apertura_refrigerador: bool
+    # HU-04: None cuando el dispositivo no tiene MC-38 instalado — no se
+    # simula una puerta cerrada que en realidad no existe.
+    apertura_refrigerador: bool | None
     estado_conectividad: str
     id: UUID | None = None
     nivel_riesgo: NivelRiesgo | None = None
@@ -47,6 +50,42 @@ class LecturaTermica:
     # contiene trazas de pila ni secretos, solo un código corto.
     estado_inferencia: str | None = None
     motivo_no_inferencia: str | None = None
+    # HU-05: identificador lógico de la lectura generado por el firmware
+    # (None en payloads antiguos sin este campo) y versión del contrato de
+    # payload con el que se construyó.
+    reading_id: str | None = None
+    schema_version: int | None = None
+    # HU-18/21/34: `nivel_riesgo` (arriba) sigue siendo la clase cruda que
+    # produce el pipeline IA/salvaguarda (model_class). `excursion_confirmada`
+    # y `riesgo_efectivo` son conceptos DISTINTOS y deliberadamente separados
+    # (Observación 5 del backlog de 51 HU): una excursión confirmada depende
+    # ÚNICAMENTE de que la temperatura válida esté fuera de 2-8 °C, nunca de
+    # lo que diga la IA; `riesgo_efectivo` es la política determinista que
+    # combina ambas para decidir qué se muestra/alerta.
+    excursion_confirmada: bool = False
+    riesgo_efectivo: NivelRiesgo | None = None
+    # HU-47: evidencia completa de la inferencia para auditoría — None cuando
+    # no hubo inferencia real de Random Forest.
+    probabilidades_ia: dict[str, float] | None = None
+    vector_features_ia: dict[str, float] | None = None
+
+    def es_excursion_confirmada(self) -> bool:
+        """HU-21: regla directa de rango térmico, inmediata e independiente de
+        la IA — sin duración mínima ni tendencia, a diferencia de la
+        salvaguarda determinista de `reglas_riesgo.clasificar_por_regla`
+        (esa alimenta `nivel_riesgo`/model_class, no esta excursión)."""
+        if self.temperatura_interna is None:
+            return False
+        return not RANGO_TERMICO_BPA.contiene(self.temperatura_interna)
+
+    def calcular_riesgo_efectivo(self) -> NivelRiesgo | None:
+        """HU-18/21/34: una excursión confirmada por rango es EXCURSION_CRITICA
+        sin importar qué haya clasificado la IA (incluso si `nivel_riesgo` es
+        None por no_clasificable). Si no hay excursión confirmada, el riesgo
+        efectivo es el que produjo el pipeline IA/salvaguarda tal cual."""
+        if self.es_excursion_confirmada():
+            return NivelRiesgo.EXCURSION_CRITICA
+        return self.nivel_riesgo
 
     def diferencia_sensores(self) -> float:
         if self.temperatura_ambiental is None or self.temperatura_interna is None:

@@ -65,6 +65,30 @@ class DeviceModel(Base):
     fecha_proxima_calibracion: Mapped[date | None] = mapped_column(Date, nullable=True)
     observaciones_calibracion: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # HU-44/HU-10: credencial MQTT por dispositivo. Se guarda el HASH del
+    # token (nunca el valor en claro, mismo criterio que password_hasher),
+    # así que ni un volcado de la base de datos revela credenciales
+    # utilizables. mqtt_token_activo permite revocar de inmediato sin
+    # esperar rotación: una vez False, ningún hash coincide como válido.
+    mqtt_token_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mqtt_token_activo: Mapped[bool] = mapped_column(Boolean, default=False)
+    mqtt_credencial_actualizada_en: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # HU-43: metadatos capturados en el alta explícita del dispositivo.
+    sensores_habilitados: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    dado_de_alta_por: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+
+    # HU-51: metadatos de instalación del sensor DS18B20.
+    fecha_instalacion: Mapped[date | None] = mapped_column(Date, nullable=True)
+    instalado_por: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    observaciones_instalacion: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     lecturas: Mapped[list["ThermalReadingModel"]] = relationship(back_populates="device")
 
 
@@ -119,7 +143,8 @@ class ThermalReadingModel(Base):
     temperatura_ambiental: Mapped[float | None] = mapped_column(Float, nullable=True)
     humedad_ambiental: Mapped[float | None] = mapped_column(Float, nullable=True)
     temperatura_interna: Mapped[float | None] = mapped_column(Float, nullable=True)
-    apertura_refrigerador: Mapped[bool] = mapped_column(Boolean, default=False)
+    # HU-04: nullable — None cuando el dispositivo no tiene MC-38 instalado.
+    apertura_refrigerador: Mapped[bool | None] = mapped_column(Boolean, default=False, nullable=True)
     nivel_riesgo: Mapped[str | None] = mapped_column(String(30), nullable=True)
     estado_conectividad: Mapped[str | None] = mapped_column(String(20), nullable=True)
     payload: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
@@ -133,6 +158,18 @@ class ThermalReadingModel(Base):
     # cuando no fue "completada". NULL en registros anteriores a esta migración.
     estado_inferencia: Mapped[str | None] = mapped_column(String(30), nullable=True)
     motivo_no_inferencia: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # HU-05: identificador lógico generado por el firmware (None en payloads
+    # de dispositivos aún no actualizados) y versión del contrato de payload.
+    reading_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    schema_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # HU-18/21/34: conceptos distintos de `nivel_riesgo` (model_class, arriba)
+    # — ver docstring de LecturaTermica.calcular_riesgo_efectivo().
+    excursion_confirmada: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    riesgo_efectivo: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # HU-47: evidencia completa de la inferencia (probabilidad por clase y
+    # vector de features exacto), para auditoría explicativa por lectura.
+    probabilidades_ia: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
+    vector_features_ia: Mapped[dict | None] = mapped_column(JSONVariant, nullable=True)
     created_at: Mapped[datetime] = _created_at_column()
 
     device: Mapped[DeviceModel] = relationship(back_populates="lecturas")
@@ -170,6 +207,11 @@ class ThermalAlertModel(Base):
     lectura_mas_reciente_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("thermal_readings.id"), nullable=False)
     ultima_actualizacion: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now())
     cerrada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # HU-23: máquina de estados PENDIENTE/RECONOCIDA/ATENDIDA, además del
+    # booleano revisada (que se mantiene por compatibilidad).
+    estado: Mapped[str] = mapped_column(String(20), nullable=False, default="pendiente")
+    reconocida_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    atendida_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = _created_at_column()
 
     lectura: Mapped[ThermalReadingModel] = relationship(back_populates="alertas", foreign_keys=[reading_id])
@@ -183,6 +225,10 @@ class CorrectiveActionModel(Base):
     alert_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("thermal_alerts.id"), nullable=False)
     usuario_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False)
     descripcion: Mapped[str] = mapped_column(Text, nullable=False)
+    # HU-28: referencia a la acción que esta rectifica (None si es original).
+    corrige_accion_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("corrective_actions.id"), nullable=True
+    )
     created_at: Mapped[datetime] = _created_at_column()
 
     alerta: Mapped[ThermalAlertModel] = relationship(back_populates="acciones_correctivas")
@@ -316,3 +362,45 @@ class SystemStateModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     cadena_comprometida: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, server_default=func.now())
+
+
+class ModeloIAVersionModel(Base):
+    """HU-46 (backlog de 51 HU finales): registro de gobierno de versiones
+    del modelo Random Forest — solo una versión REGISTRADA aquí puede
+    activarse; activar una no registrada se rechaza (criterio 2 de HU-46).
+    """
+
+    __tablename__ = "ai_model_versions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    version: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    model_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    feature_schema_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    dataset_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    scikit_learn_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    python_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    trained_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    aprobado_por: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    aprobado_en: Mapped[datetime] = _created_at_column()
+    # Historial de activación: permite reconstruir, para cualquier timestamp
+    # pasado, cuál era la versión activa en ese momento (HU-47 criterio 2).
+    activa: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    activada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    desactivada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DeviceConfigHistoryModel(Base):
+    """HU-49: historial auditable de cambios de configuración/instalación/
+    calibración/reemplazo del hardware — valor anterior, valor nuevo, actor
+    y timestamp por cada cambio de campo. La telemetría y sus hashes previos
+    nunca se recalculan cuando cambia una fila de este historial."""
+
+    __tablename__ = "device_config_history"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    device_id: Mapped[str] = mapped_column(String(50), ForeignKey("devices.id"), nullable=False, index=True)
+    campo: Mapped[str] = mapped_column(String(50), nullable=False)
+    valor_anterior: Mapped[str | None] = mapped_column(Text, nullable=True)
+    valor_nuevo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = _created_at_column()

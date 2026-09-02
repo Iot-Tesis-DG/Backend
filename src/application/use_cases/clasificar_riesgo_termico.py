@@ -17,7 +17,13 @@ from src.infrastructure.ai.random_forest_service import (
 )
 
 UMBRAL_DESVIACION_C = 0.5
-HUMEDAD_FALLBACK_NEUTRA_PCT = 50.0
+# HU-17: se requieren al menos 2 temperaturas internas previas válidas para
+# calcular una tendencia térmica real (regresión lineal). Con menos, no se
+# imputa un valor neutro (0.0) — eso produciría el mismo training-serving
+# skew que la historia prohíbe explícitamente para la humedad — se marca la
+# lectura como no_clasificable y queda sujeta únicamente a la regla directa
+# de rango 2-8 °C (HU-21), que no depende de este historial.
+MINIMO_HISTORIAL_PARA_TENDENCIA = 2
 
 
 def _a_utc(valor: datetime) -> datetime:
@@ -88,17 +94,20 @@ class ClasificarRiesgoTermicoUseCase:
 
         return FeaturesRiesgoTermico(
             temperatura_ambiental=lectura.temperatura_ambiental,
-            humedad_ambiental=(
-                lectura.humedad_ambiental
-                if lectura.humedad_ambiental is not None
-                else HUMEDAD_FALLBACK_NEUTRA_PCT
-            ),
+            humedad_ambiental=lectura.humedad_ambiental,
             temperatura_interna=temperatura_interna,
             diferencia_sensores=lectura.diferencia_sensores(),
             duracion_fuera_rango=duracion_fuera_rango,
             frecuencia_desviaciones=float(frecuencia_desviaciones),
             tendencia_termica=tendencia_termica,
-            apertura_refrigerador=lectura.apertura_refrigerador,
+            # HU-04: ausencia de MC-38 es un hecho de configuración de
+            # hardware, no un dato faltante — False neutro no afecta la IA,
+            # tal como exige HU-04.
+            apertura_refrigerador=(
+                lectura.apertura_refrigerador
+                if lectura.apertura_refrigerador is not None
+                else False
+            ),
             hora_evento=lectura.timestamp.hour,
             estado_conectividad_online=lectura.estado_conectividad == "online",
         )
@@ -133,6 +142,11 @@ class ClasificarRiesgoTermicoUseCase:
                 nivel=None, confianza=None, origen=ORIGEN_FALLO_SENSOR,
                 estado_inferencia=ESTADO_OMITIDA, motivo_no_inferencia="sensor_ambiental_valor_no_finito",
             )
+        if _es_invalido(lectura.humedad_ambiental):
+            return ResultadoInferencia(
+                nivel=None, confianza=None, origen=ORIGEN_FALLO_SENSOR,
+                estado_inferencia=ESTADO_OMITIDA, motivo_no_inferencia="sensor_humedad_valor_no_finito",
+            )
 
         historial_ordenado = sorted(historial, key=lambda lec: _a_utc(lec.timestamp))
 
@@ -149,6 +163,40 @@ class ClasificarRiesgoTermicoUseCase:
                     motivo_no_inferencia="sensor_ambiental_ausente_sin_historial_de_respaldo",
                 )
             lectura = replace(lectura, temperatura_ambiental=ambiental_fallback)
+
+        if lectura.humedad_ambiental is None:
+            # HU-17: mismo tratamiento que la temperatura ambiental. Antes se
+            # sustituía por un 50 % fijo sin importar si había o no historial
+            # de respaldo — exactamente la imputación de valor neutro que la
+            # historia prohíbe. Ahora usa el mismo fallback documentado
+            # (último valor válido del historial) y, si tampoco existe, la
+            # lectura queda no_clasificable en vez de inventar el dato.
+            humedad_fallback = _ultimo_valor_valido(historial_ordenado, "humedad_ambiental")
+            if humedad_fallback is None:
+                return ResultadoInferencia(
+                    nivel=None, confianza=None, origen=ORIGEN_DATO_INSUFICIENTE,
+                    estado_inferencia=ESTADO_OMITIDA,
+                    motivo_no_inferencia="sensor_humedad_ausente_sin_historial_de_respaldo",
+                )
+            lectura = replace(lectura, humedad_ambiental=humedad_fallback)
+
+        temperaturas_previas_validas = sum(
+            1 for h in historial_ordenado
+            if h.temperatura_interna is not None and math.isfinite(h.temperatura_interna)
+        )
+        if temperaturas_previas_validas < MINIMO_HISTORIAL_PARA_TENDENCIA:
+            # HU-17 criterio 2 (caso explícito del enunciado: "el nodo acaba
+            # de conectarse y no hay suficiente historial térmico reciente
+            # para calcular... tendencia térmica móvil"). No se inyecta 0.0
+            # como tendencia neutra: se marca no_clasificable y la lectura
+            # queda sujeta únicamente a la regla directa de rango 2-8 °C
+            # (HU-21), que LecturaTermica.es_excursion_confirmada() evalúa
+            # de forma completamente independiente de este resultado.
+            return ResultadoInferencia(
+                nivel=None, confianza=None, origen=ORIGEN_DATO_INSUFICIENTE,
+                estado_inferencia=ESTADO_OMITIDA,
+                motivo_no_inferencia="historial_insuficiente_para_tendencia",
+            )
 
         features = self._construir_features(lectura, historial)
         return self._ai_service.inferir(features)

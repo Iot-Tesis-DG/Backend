@@ -155,6 +155,14 @@ def _fmt_num(valor: Any, sufijo: str = "", decimales: int = 1) -> str:
         return str(valor)
 
 
+def _fmt_puerta(valor: Any) -> str:
+    # HU-04: None significa que el dispositivo no tiene MC-38 instalado, no
+    # "puerta cerrada" — distinguirlo evita reportar un dato que no existe.
+    if valor is None:
+        return "N/D (sin MC-38)"
+    return "Abierta" if valor else "Cerrada"
+
+
 def _estilo_tabla_base(alineaciones: list[tuple]) -> TableStyle:
     return TableStyle(
         [
@@ -410,7 +418,7 @@ class GeneradorReporteBPAPDF:
                     _fmt_num(lectura.get("temperatura_interna"), " °C"),
                     _fmt_num(lectura.get("temperatura_ambiental"), " °C"),
                     _fmt_num(lectura.get("humedad_ambiental"), " %"),
-                    "Abierta" if lectura.get("apertura_refrigerador") else "Cerrada",
+                    _fmt_puerta(lectura.get("apertura_refrigerador")),
                     _ETIQUETA_RIESGO.get(nivel, "Sin clasificar"),
                     _fmt_num(
                         None if lectura.get("confianza_ia") is None else float(lectura["confianza_ia"]) * 100,
