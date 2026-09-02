@@ -4,8 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from src.application.use_cases.auditar_accion_critica import AuditarAccionCriticaUseCase
 from src.application.use_cases.consultar_alertas import ConsultarAlertasUseCase, MarcarAlertaRevisadaUseCase
-from src.application.use_cases.registrar_accion_correctiva import RegistrarAccionCorrectivaUseCase
-from src.domain.exceptions import RecursoNoEncontradoError
+from src.application.use_cases.registrar_accion_correctiva import (
+    CorregirAccionCorrectivaUseCase,
+    RegistrarAccionCorrectivaUseCase,
+)
+from src.domain.exceptions import DomainError, RecursoNoEncontradoError
 from src.domain.value_objects.rol import Rol
 from src.infrastructure.database.repositories.accion_correctiva_repository import (
     SQLAlchemyAccionCorrectivaRepository,
@@ -19,6 +22,7 @@ from src.interface.api.deps import DbSessionDep, require_roles
 from src.interface.api.mappers import alerta_to_response
 from src.interface.api.schemas import (
     AccionCorrectivaCreateRequest,
+    AccionCorrectivaRectificarRequest,
     AccionCorrectivaResponse,
     AlertaResponse,
 )
@@ -29,15 +33,18 @@ router = APIRouter(prefix="/api/alertas", tags=["alertas"])
 @router.get("", response_model=list[AlertaResponse])
 async def listar_alertas(
     session: DbSessionDep,
-    _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO)),
+    _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO, Rol.AUDITOR)),
     device_id: str | None = None,
     revisada: bool | None = None,
+    estado: str | None = None,
     limite: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> list[AlertaResponse]:
     alerta_repository = SQLAlchemyAlertaRepository(session)
     use_case = ConsultarAlertasUseCase(alerta_repository)
-    alertas = await use_case.execute(device_id=device_id, revisada=revisada, limite=limite, offset=offset)
+    alertas = await use_case.execute(
+        device_id=device_id, revisada=revisada, estado=estado, limite=limite, offset=offset
+    )
     return [alerta_to_response(a) for a in alertas]
 
 
@@ -48,15 +55,22 @@ async def revisar_alerta(
     request: Request,
     usuario=Depends(require_roles(Rol.FARMACEUTICO)),
 ) -> AlertaResponse:
+    """HU-23 Escenario 1: PENDIENTE -> RECONOCIDA. El nombre del endpoint
+    (/revisar) se conserva por compatibilidad; el efecto ahora es un
+    reconocimiento formal con máquina de estados, no solo un booleano."""
     alerta_repository = SQLAlchemyAlertaRepository(session)
     use_case = MarcarAlertaRevisadaUseCase(alerta_repository)
     try:
         alerta = await use_case.execute(alerta_id, usuario.id)
     except RecursoNoEncontradoError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except DomainError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     auditoria_repository = SQLAlchemyAuditLogRepository(session)
-    await AuditarAccionCriticaUseCase(auditoria_repository).execute(
+    await AuditarAccionCriticaUseCase(
+        auditoria_repository, SQLAlchemyTrazabilidadRepository(session)
+    ).execute(
         usuario_id=usuario.id,
         accion="REVISAR_ALERTA",
         recurso=f"alertas/{alerta_id}",
@@ -87,9 +101,15 @@ async def registrar_accion_correctiva(
         accion = await use_case.execute(alerta_id, usuario.id, body.descripcion)
     except RecursoNoEncontradoError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except DomainError as exc:
+        # HU-27 Escenario 2: la alerta ya no está vigente (otro usuario la
+        # atendió primero) — 409, no un 500 ni una sobrescritura silenciosa.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     auditoria_repository = SQLAlchemyAuditLogRepository(session)
-    await AuditarAccionCriticaUseCase(auditoria_repository).execute(
+    await AuditarAccionCriticaUseCase(
+        auditoria_repository, trazabilidad_repository
+    ).execute(
         usuario_id=usuario.id,
         accion="REGISTRAR_ACCION_CORRECTIVA",
         recurso=f"alertas/{alerta_id}/acciones-correctivas/{accion.id}",
@@ -103,4 +123,46 @@ async def registrar_accion_correctiva(
         usuario_id=accion.usuario_id,
         descripcion=accion.descripcion,
         created_at=accion.created_at,
+        corrige_accion_id=accion.corrige_accion_id,
+    )
+
+
+@router.post(
+    "/acciones-correctivas/{accion_id}/rectificar",
+    response_model=AccionCorrectivaResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def rectificar_accion_correctiva(
+    accion_id: UUID,
+    body: AccionCorrectivaRectificarRequest,
+    session: DbSessionDep,
+    request: Request,
+    usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO)),
+) -> AccionCorrectivaResponse:
+    """HU-28: corrige una justificación previamente registrada creando un
+    nuevo evento que referencia a la anterior, sin sobrescribirla."""
+    accion_repository = SQLAlchemyAccionCorrectivaRepository(session)
+    trazabilidad_repository = SQLAlchemyTrazabilidadRepository(session)
+    use_case = CorregirAccionCorrectivaUseCase(accion_repository, trazabilidad_repository)
+    try:
+        accion = await use_case.execute(accion_id, usuario.id, body.descripcion)
+    except RecursoNoEncontradoError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    auditoria_repository = SQLAlchemyAuditLogRepository(session)
+    await AuditarAccionCriticaUseCase(auditoria_repository, trazabilidad_repository).execute(
+        usuario_id=usuario.id,
+        accion="RECTIFICAR_ACCION_CORRECTIVA",
+        recurso=f"alertas/acciones-correctivas/{accion_id}/rectificar",
+        detalle={"descripcion": body.descripcion, "corrige_accion_id": str(accion_id)},
+        ip_origen=request.client.host if request.client else None,
+    )
+    await session.commit()
+    return AccionCorrectivaResponse(
+        id=accion.id,
+        alert_id=accion.alert_id,
+        usuario_id=accion.usuario_id,
+        descripcion=accion.descripcion,
+        created_at=accion.created_at,
+        corrige_accion_id=accion.corrige_accion_id,
     )

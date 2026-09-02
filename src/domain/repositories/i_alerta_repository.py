@@ -18,6 +18,7 @@ class IAlertaRepository(ABC):
         self,
         device_id: str | None = None,
         revisada: bool | None = None,
+        estado: str | None = None,
         desde: datetime | None = None,
         hasta: datetime | None = None,
         limite: int = 100,
@@ -26,6 +27,16 @@ class IAlertaRepository(ABC):
 
     @abstractmethod
     async def actualizar(self, alerta: AlertaTermica) -> AlertaTermica: ...
+
+    @abstractmethod
+    async def marcar_atendida_si_no_atendida(self, alerta_id: UUID, timestamp: datetime) -> bool:
+        """HU-27 Escenario 2: transición atómica a ATENDIDA a nivel de base de
+        datos (UPDATE ... WHERE estado != 'atendida'), no un patrón
+        leer-modificar-escribir en memoria. Dos solicitudes casi simultáneas
+        sobre la misma alerta deben resolverse de forma que solo una gane —
+        la que pierde recibe False y NO debe registrar su acción correctiva.
+        Devuelve True si esta llamada fue la que transicionó la alerta."""
+        ...
 
     @abstractmethod
     async def obtener_episodio_abierto(self, device_id: str) -> AlertaTermica | None:

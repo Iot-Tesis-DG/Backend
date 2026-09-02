@@ -1,11 +1,12 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.entities.alerta_termica import AlertaTermica
 from src.domain.repositories.i_alerta_repository import IAlertaRepository
+from src.domain.value_objects.estado_alerta import EstadoAlerta
 from src.domain.value_objects.nivel_riesgo import NivelRiesgo
 from src.infrastructure.database.models import ThermalAlertModel
 
@@ -25,6 +26,9 @@ def _to_entity(model: ThermalAlertModel) -> AlertaTermica:
         lectura_mas_reciente_id=model.lectura_mas_reciente_id,
         ultima_actualizacion=model.ultima_actualizacion,
         cerrada_en=model.cerrada_en,
+        estado=EstadoAlerta(model.estado),
+        reconocida_en=model.reconocida_en,
+        atendida_en=model.atendida_en,
     )
 
 
@@ -45,6 +49,9 @@ class SQLAlchemyAlertaRepository(IAlertaRepository):
             lectura_mas_reciente_id=alerta.lectura_mas_reciente_id or alerta.reading_id,
             ultima_actualizacion=alerta.ultima_actualizacion,
             cerrada_en=alerta.cerrada_en,
+            estado=alerta.estado.value,
+            reconocida_en=alerta.reconocida_en,
+            atendida_en=alerta.atendida_en,
         )
         self._session.add(model)
         await self._session.flush()
@@ -59,6 +66,7 @@ class SQLAlchemyAlertaRepository(IAlertaRepository):
         self,
         device_id: str | None = None,
         revisada: bool | None = None,
+        estado: str | None = None,
         desde: datetime | None = None,
         hasta: datetime | None = None,
         limite: int = 100,
@@ -69,6 +77,8 @@ class SQLAlchemyAlertaRepository(IAlertaRepository):
             stmt = stmt.where(ThermalAlertModel.device_id == device_id)
         if revisada is not None:
             stmt = stmt.where(ThermalAlertModel.revisada == revisada)
+        if estado is not None:
+            stmt = stmt.where(ThermalAlertModel.estado == estado)
         # Acotar por periodo es indispensable en el reporte BPA (RF-13): sin
         # esto el reporte de un mes incluía las alertas de todo el histórico.
         if desde is not None:
@@ -89,9 +99,22 @@ class SQLAlchemyAlertaRepository(IAlertaRepository):
         model.lectura_mas_reciente_id = alerta.lectura_mas_reciente_id
         model.ultima_actualizacion = alerta.ultima_actualizacion
         model.cerrada_en = alerta.cerrada_en
+        model.estado = alerta.estado.value
+        model.reconocida_en = alerta.reconocida_en
+        model.atendida_en = alerta.atendida_en
         await self._session.flush()
         await self._session.refresh(model)
         return _to_entity(model)
+
+    async def marcar_atendida_si_no_atendida(self, alerta_id: UUID, timestamp: datetime) -> bool:
+        stmt = (
+            update(ThermalAlertModel)
+            .where(ThermalAlertModel.id == alerta_id, ThermalAlertModel.estado != EstadoAlerta.ATENDIDA.value)
+            .values(estado=EstadoAlerta.ATENDIDA.value, atendida_en=timestamp)
+        )
+        resultado = await self._session.execute(stmt)
+        await self._session.flush()
+        return resultado.rowcount == 1
 
     async def obtener_episodio_abierto(self, device_id: str) -> AlertaTermica | None:
         stmt = (
