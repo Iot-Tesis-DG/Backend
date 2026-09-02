@@ -1,10 +1,27 @@
 from abc import ABC, abstractmethod
 from datetime import date, datetime
+from uuid import UUID
 
 
 class IDeviceRepository(ABC):
     @abstractmethod
     async def existe(self, device_id: str) -> bool: ...
+
+    @abstractmethod
+    async def existio_alguna_vez(self, device_id: str) -> bool:
+        """HU-43 criterio 1: incluye dispositivos dados de baja — un
+        device_id nunca se reutiliza, ni siquiera tras retirarlo."""
+        ...
+
+    @abstractmethod
+    async def crear(
+        self,
+        device_id: str,
+        nombre: str | None,
+        ubicacion: str | None,
+        sensores_habilitados: list[str],
+        admin_id: UUID,
+    ) -> dict: ...
 
     @abstractmethod
     async def obtener_o_crear(self, device_id: str) -> dict: ...
@@ -50,3 +67,42 @@ class IDeviceRepository(ABC):
 
     @abstractmethod
     async def listar_calibracion_proxima(self, desde: date, hasta: date) -> list[dict]: ...
+
+    # ── HU-44/HU-10: credencial MQTT por dispositivo ───────────────────────
+    @abstractmethod
+    async def guardar_credencial(self, device_id: str, token_hash: str, cuando: datetime) -> None: ...
+
+    @abstractmethod
+    async def revocar_credencial(self, device_id: str, cuando: datetime) -> None: ...
+
+    @abstractmethod
+    async def obtener_credencial(self, device_id: str) -> dict | None:
+        """None si el dispositivo no existe. Si existe, incluye
+        mqtt_token_hash (puede ser None si nunca se aprovisionó) y
+        mqtt_token_activo."""
+        ...
+
+    # ── HU-51: ubicación y metadatos de instalación ────────────────────────
+    @abstractmethod
+    async def actualizar_ubicacion_y_metadata(
+        self,
+        device_id: str,
+        ubicacion: str | None,
+        fecha_instalacion: date | None,
+        instalado_por: UUID | None,
+        observaciones: str | None,
+    ) -> dict: ...
+
+    # ── HU-49: historial auditable de configuración ────────────────────────
+    @abstractmethod
+    async def registrar_evento_config(
+        self,
+        device_id: str,
+        campo: str,
+        valor_anterior: str | None,
+        valor_nuevo: str | None,
+        actor_id: UUID | None,
+    ) -> None: ...
+
+    @abstractmethod
+    async def listar_historial_configuracion(self, device_id: str) -> list[dict]: ...

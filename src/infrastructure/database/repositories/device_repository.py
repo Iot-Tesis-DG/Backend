@@ -1,10 +1,11 @@
 from datetime import date, datetime
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.repositories.i_device_repository import IDeviceRepository
-from src.infrastructure.database.models import DeviceModel
+from src.infrastructure.database.models import DeviceConfigHistoryModel, DeviceModel
 
 
 def _to_dict(model: DeviceModel) -> dict:
@@ -24,6 +25,12 @@ def _to_dict(model: DeviceModel) -> dict:
         "numero_certificado_calibracion": model.numero_certificado_calibracion,
         "fecha_proxima_calibracion": model.fecha_proxima_calibracion,
         "observaciones_calibracion": model.observaciones_calibracion,
+        "mqtt_token_activo": model.mqtt_token_activo,
+        "mqtt_credencial_actualizada_en": model.mqtt_credencial_actualizada_en,
+        "sensores_habilitados": (model.sensores_habilitados or {}).get("habilitados", []),
+        "fecha_instalacion": model.fecha_instalacion,
+        "instalado_por": model.instalado_por,
+        "observaciones_instalacion": model.observaciones_instalacion,
     }
 
 
@@ -33,6 +40,29 @@ class SQLAlchemyDeviceRepository(IDeviceRepository):
 
     async def existe(self, device_id: str) -> bool:
         return await self._session.get(DeviceModel, device_id) is not None
+
+    async def existio_alguna_vez(self, device_id: str) -> bool:
+        return await self._session.get(DeviceModel, device_id) is not None
+
+    async def crear(
+        self,
+        device_id: str,
+        nombre: str | None,
+        ubicacion: str | None,
+        sensores_habilitados: list[str],
+        admin_id: UUID,
+    ) -> dict:
+        model = DeviceModel(
+            id=device_id,
+            nombre=nombre,
+            ubicacion=ubicacion,
+            sensores_habilitados={"habilitados": sensores_habilitados},
+            dado_de_alta_por=admin_id,
+        )
+        self._session.add(model)
+        await self._session.flush()
+        await self._session.refresh(model)
+        return _to_dict(model)
 
     async def obtener_o_crear(self, device_id: str) -> dict:
         model = await self._session.get(DeviceModel, device_id)
@@ -137,3 +167,89 @@ class SQLAlchemyDeviceRepository(IDeviceRepository):
             )
         )
         return [_to_dict(m) for m in resultado.scalars().all()]
+
+    # ── HU-44/HU-10: credencial MQTT por dispositivo ───────────────────────
+    async def guardar_credencial(self, device_id: str, token_hash: str, cuando: datetime) -> None:
+        model = await self._session.get(DeviceModel, device_id)
+        if model is None:
+            raise ValueError(f"Dispositivo {device_id} no encontrado")
+        model.mqtt_token_hash = token_hash
+        model.mqtt_token_activo = True
+        model.mqtt_credencial_actualizada_en = cuando
+        await self._session.flush()
+
+    async def revocar_credencial(self, device_id: str, cuando: datetime) -> None:
+        model = await self._session.get(DeviceModel, device_id)
+        if model is None:
+            raise ValueError(f"Dispositivo {device_id} no encontrado")
+        model.mqtt_token_activo = False
+        model.mqtt_credencial_actualizada_en = cuando
+        await self._session.flush()
+
+    async def obtener_credencial(self, device_id: str) -> dict | None:
+        model = await self._session.get(DeviceModel, device_id)
+        if model is None:
+            return None
+        return {
+            "mqtt_token_hash": model.mqtt_token_hash,
+            "mqtt_token_activo": model.mqtt_token_activo,
+        }
+
+    # ── HU-51: ubicación y metadatos de instalación ────────────────────────
+    async def actualizar_ubicacion_y_metadata(
+        self,
+        device_id: str,
+        ubicacion: str | None,
+        fecha_instalacion: date | None,
+        instalado_por: UUID | None,
+        observaciones: str | None,
+    ) -> dict:
+        model = await self._session.get(DeviceModel, device_id)
+        if model is None:
+            raise ValueError(f"Dispositivo {device_id} no encontrado")
+        model.ubicacion = ubicacion
+        model.fecha_instalacion = fecha_instalacion
+        model.instalado_por = instalado_por
+        model.observaciones_instalacion = observaciones
+        await self._session.flush()
+        return _to_dict(model)
+
+    # ── HU-49: historial auditable de configuración ────────────────────────
+    async def registrar_evento_config(
+        self,
+        device_id: str,
+        campo: str,
+        valor_anterior: str | None,
+        valor_nuevo: str | None,
+        actor_id: UUID | None,
+    ) -> None:
+        self._session.add(
+            DeviceConfigHistoryModel(
+                device_id=device_id,
+                campo=campo,
+                valor_anterior=valor_anterior,
+                valor_nuevo=valor_nuevo,
+                actor_id=actor_id,
+            )
+        )
+        await self._session.flush()
+
+    async def listar_historial_configuracion(self, device_id: str) -> list[dict]:
+        stmt = (
+            select(DeviceConfigHistoryModel)
+            .where(DeviceConfigHistoryModel.device_id == device_id)
+            .order_by(DeviceConfigHistoryModel.created_at.desc())
+        )
+        resultado = await self._session.execute(stmt)
+        return [
+            {
+                "id": m.id,
+                "device_id": m.device_id,
+                "campo": m.campo,
+                "valor_anterior": m.valor_anterior,
+                "valor_nuevo": m.valor_nuevo,
+                "actor_id": m.actor_id,
+                "created_at": m.created_at,
+            }
+            for m in resultado.scalars().all()
+        ]

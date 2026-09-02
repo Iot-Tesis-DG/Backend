@@ -1,3 +1,4 @@
+import secrets
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
@@ -5,6 +6,7 @@ from uuid import UUID
 from src.application.use_cases.registrar_hash_encadenado import RegistrarHashEncadenadoUseCase
 from src.domain.exceptions import DomainError, RecursoNoEncontradoError
 from src.domain.repositories.i_device_repository import IDeviceRepository
+from src.infrastructure.security.password_hasher import hash_password, verify_password
 
 _MOTIVOS_BAJA = frozenset({"falla_hardware", "mantenimiento", "reemplazo", "fin_de_servicio"})
 
@@ -106,8 +108,17 @@ class RegistrarCalibracionUseCase:
             raise DomainError("No se puede calibrar un dispositivo dado de baja")
 
         fecha_proxima = _sumar_meses(fecha_calibracion, meses_vigencia)
+        anterior = dispositivo.get("fecha_ultima_calibracion")
         actualizado = await self._device_repository.registrar_calibracion(
             device_id, fecha_calibracion, numero_certificado, fecha_proxima, observaciones
+        )
+        # HU-49: historial de configuración también cubre calibración.
+        await self._device_repository.registrar_evento_config(
+            device_id,
+            campo="fecha_ultima_calibracion",
+            valor_anterior=anterior.isoformat() if anterior else None,
+            valor_nuevo=fecha_calibracion.isoformat(),
+            actor_id=usuario_id,
         )
 
         await self._registrar_hash.execute(
@@ -139,3 +150,192 @@ class ConsultarEstadoCalibracionUseCase:
             hoy, hoy + timedelta(days=dias_preaviso)
         )
         return {"vencidos": vencidos, "proximos_a_vencer": proximos}
+
+
+class RotarCredencialDispositivoUseCase:
+    """HU-44/HU-10: genera un nuevo token MQTT para un dispositivo y lo deja
+    activo, invalidando implícitamente cualquier token anterior (se
+    sobrescribe el hash, no se conservan hashes previos como válidos). El
+    valor en claro se devuelve UNA sola vez para aprovisionarlo en el ESP32
+    — igual que una API key, el backend nunca vuelve a poder mostrarlo
+    porque solo conserva su hash."""
+
+    def __init__(
+        self, device_repository: IDeviceRepository, registrar_hash: RegistrarHashEncadenadoUseCase
+    ) -> None:
+        self._device_repository = device_repository
+        self._registrar_hash = registrar_hash
+
+    async def execute(self, device_id: str, admin_id: UUID, motivo: str) -> str:
+        dispositivo = await self._device_repository.obtener(device_id)
+        if dispositivo is None:
+            raise RecursoNoEncontradoError(f"Dispositivo {device_id} no encontrado")
+        if not dispositivo["activo"]:
+            raise DomainError("No se puede aprovisionar credenciales a un dispositivo dado de baja")
+
+        token = secrets.token_urlsafe(32)
+        cuando = datetime.now(tz=timezone.utc)
+        await self._device_repository.guardar_credencial(device_id, hash_password(token), cuando)
+
+        await self._registrar_hash.execute(
+            tipo_evento="ROTACION_CREDENCIAL_DISPOSITIVO",
+            payload={"device_id": device_id, "admin_id": str(admin_id), "motivo": motivo},
+            device_id=device_id,
+            usuario_id=admin_id,
+            timestamp=cuando,
+        )
+        return token
+
+
+class RevocarCredencialDispositivoUseCase:
+    """HU-44: corta de inmediato el acceso de un nodo cuyas credenciales se
+    sospechan comprometidas, sin alterar su historial de telemetría."""
+
+    def __init__(
+        self, device_repository: IDeviceRepository, registrar_hash: RegistrarHashEncadenadoUseCase
+    ) -> None:
+        self._device_repository = device_repository
+        self._registrar_hash = registrar_hash
+
+    async def execute(self, device_id: str, admin_id: UUID, motivo: str) -> None:
+        dispositivo = await self._device_repository.obtener(device_id)
+        if dispositivo is None:
+            raise RecursoNoEncontradoError(f"Dispositivo {device_id} no encontrado")
+
+        cuando = datetime.now(tz=timezone.utc)
+        await self._device_repository.revocar_credencial(device_id, cuando)
+
+        await self._registrar_hash.execute(
+            tipo_evento="REVOCACION_CREDENCIAL_DISPOSITIVO",
+            payload={"device_id": device_id, "admin_id": str(admin_id), "motivo": motivo},
+            device_id=device_id,
+            usuario_id=admin_id,
+            timestamp=cuando,
+        )
+
+
+class VerificarCredencialDispositivoUseCase:
+    """Punto de integración con el broker: EMQX Cloud puede configurarse con
+    un backend de autenticación HTTP que llame a este caso de uso (vía el
+    endpoint no autenticado /api/dispositivos/autenticar) para decidir si
+    acepta la conexión de un ESP32. Un token revocado o nunca aprovisionado
+    se rechaza; el reason code MQTT 5.0 exacto (0x87) lo aplica EMQX según
+    la respuesta HTTP, no este caso de uso."""
+
+    def __init__(self, device_repository: IDeviceRepository) -> None:
+        self._device_repository = device_repository
+
+    async def execute(self, device_id: str, token: str) -> bool:
+        credencial = await self._device_repository.obtener_credencial(device_id)
+        if credencial is None or not credencial["mqtt_token_activo"]:
+            return False
+        if credencial["mqtt_token_hash"] is None:
+            return False
+        return verify_password(token, credencial["mqtt_token_hash"])
+
+
+class RegistrarAltaDispositivoUseCase:
+    """HU-43 Escenario 1: alta explícita de un nuevo nodo — un device_id
+    único, estado activo, sensores habilitados y metadatos básicos, sin
+    reutilizar la identidad de un equipo que haya existido antes (incluso
+    dado de baja)."""
+
+    def __init__(
+        self, device_repository: IDeviceRepository, registrar_hash: RegistrarHashEncadenadoUseCase
+    ) -> None:
+        self._device_repository = device_repository
+        self._registrar_hash = registrar_hash
+
+    async def execute(
+        self,
+        device_id: str,
+        nombre: str | None,
+        ubicacion: str | None,
+        sensores_habilitados: list[str],
+        admin_id: UUID,
+    ) -> dict:
+        if await self._device_repository.existio_alguna_vez(device_id):
+            raise DomainError(
+                f"El device_id {device_id} ya fue usado por otro equipo (activo o dado de baja)"
+            )
+
+        creado = await self._device_repository.crear(
+            device_id, nombre, ubicacion, sensores_habilitados, admin_id
+        )
+
+        await self._registrar_hash.execute(
+            tipo_evento="ALTA_DISPOSITIVO",
+            payload={
+                "device_id": device_id,
+                "nombre": nombre,
+                "ubicacion": ubicacion,
+                "sensores_habilitados": sensores_habilitados,
+                "admin_id": str(admin_id),
+            },
+            device_id=device_id,
+            usuario_id=admin_id,
+        )
+        return creado
+
+
+class ActualizarUbicacionYMetadatosInstalacionUseCase:
+    """HU-51: documenta la ubicación física del DS18B20 y los metadatos de
+    instalación. Un cambio de ubicación genera un evento histórico (HU-49)
+    en vez de sobrescribir en silencio la ubicación previa."""
+
+    def __init__(
+        self, device_repository: IDeviceRepository, registrar_hash: RegistrarHashEncadenadoUseCase
+    ) -> None:
+        self._device_repository = device_repository
+        self._registrar_hash = registrar_hash
+
+    async def execute(
+        self,
+        device_id: str,
+        ubicacion: str | None,
+        fecha_instalacion: date | None,
+        instalado_por: UUID,
+        observaciones: str | None,
+    ) -> dict:
+        anterior = await self._device_repository.obtener(device_id)
+        if anterior is None:
+            raise RecursoNoEncontradoError(f"Dispositivo {device_id} no encontrado")
+
+        actualizado = await self._device_repository.actualizar_ubicacion_y_metadata(
+            device_id, ubicacion, fecha_instalacion, instalado_por, observaciones
+        )
+
+        if anterior["ubicacion"] != ubicacion:
+            await self._device_repository.registrar_evento_config(
+                device_id,
+                campo="ubicacion",
+                valor_anterior=anterior["ubicacion"],
+                valor_nuevo=ubicacion,
+                actor_id=instalado_por,
+            )
+
+        await self._registrar_hash.execute(
+            tipo_evento="INSTALACION_DISPOSITIVO_ACTUALIZADA",
+            payload={
+                "device_id": device_id,
+                "ubicacion_anterior": anterior["ubicacion"],
+                "ubicacion_nueva": ubicacion,
+                "fecha_instalacion": fecha_instalacion.isoformat() if fecha_instalacion else None,
+                "instalado_por": str(instalado_por),
+                "observaciones": observaciones,
+            },
+            device_id=device_id,
+            usuario_id=instalado_por,
+        )
+        return actualizado
+
+
+class ConsultarHistorialConfiguracionUseCase:
+    """HU-49: historial de cambios de configuración/instalación/calibración/
+    reemplazo de un dispositivo, de solo lectura."""
+
+    def __init__(self, device_repository: IDeviceRepository) -> None:
+        self._device_repository = device_repository
+
+    async def execute(self, device_id: str) -> list[dict]:
+        return await self._device_repository.listar_historial_configuracion(device_id)
