@@ -17,10 +17,12 @@ MENSAJES_POR_RIESGO = {
     NivelRiesgo.EXCURSION_CRITICA: "Excursión crítica: la temperatura está fuera del rango 2-8 C.",
 }
 
-# AIV-02: ventana de cooldown — un episodio recién cerrado del mismo
-# dispositivo y tipo de riesgo se reabre (no se crea uno nuevo) si la
-# siguiente lectura crítica llega dentro de esta ventana, evitando flapping
-# de apertura/cierre por una única lectura normal aislada (histéresis).
+# AIV-02 / HU-20: ventana de normalización (cooldown) — un episodio recién
+# cerrado del mismo dispositivo y tipo de riesgo se reabre (no se crea uno
+# nuevo) si la siguiente lectura crítica llega dentro de esta ventana,
+# evitando flapping de apertura/cierre por una única lectura normal aislada
+# (histéresis). Valor por defecto; configurable por instancia via Settings
+# (ver GenerarAlertaUseCase.__init__ y su construcción en los routers).
 COOLDOWN_MINUTOS = 15
 
 
@@ -48,9 +50,11 @@ class GenerarAlertaUseCase:
         self,
         alerta_repository: IAlertaRepository,
         notificacion_service: "NotificacionService | None" = None,
+        ventana_normalizacion_minutos: int = COOLDOWN_MINUTOS,
     ) -> None:
         self._alerta_repository = alerta_repository
         self._notificacion_service = notificacion_service
+        self._ventana_normalizacion_minutos = ventana_normalizacion_minutos
 
     async def _avisar_si_es_apertura_critica(
         self,
@@ -107,7 +111,8 @@ class GenerarAlertaUseCase:
         if (
             ultimo_cerrado is not None
             and ultimo_cerrado.cerrada_en is not None
-            and (_a_utc(timestamp) - _a_utc(ultimo_cerrado.cerrada_en)) <= timedelta(minutes=COOLDOWN_MINUTOS)
+            and (_a_utc(timestamp) - _a_utc(ultimo_cerrado.cerrada_en))
+            <= timedelta(minutes=self._ventana_normalizacion_minutos)
         ):
             ultimo_cerrado.reabrir(reading_id, timestamp)
             reabierta = await self._alerta_repository.actualizar(ultimo_cerrado)

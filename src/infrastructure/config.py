@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     # ventana el responsable recibiría cientos de avisos y silenciaría el canal.
     notificacion_cooldown_minutos: int = 15
 
+    # HU-20: ventana de normalización configurable — un episodio de alerta
+    # cerrado y reabierto dentro de esta ventana se trata como continuación
+    # del mismo episodio en vez de crear uno nuevo (evita flapping).
+    alerta_ventana_normalizacion_minutos: int = 15
+
     cors_origins: list[str] = ["http://localhost:5173"]
 
     mqtt_host: str = "tu-instancia.emqx.cloud"

@@ -61,7 +61,7 @@ async def exportar_reporte_bpa(
     fecha_hasta: datetime,
     session: DbSessionDep,
     request: Request,
-    usuario=Depends(require_roles(Rol.FARMACEUTICO)),
+    usuario=Depends(require_roles(Rol.FARMACEUTICO, Rol.AUDITOR)),
     device_id: str | None = None,
 ) -> ReporteBPAResponse:
     _validar_rango(fecha_desde, fecha_hasta)
@@ -77,7 +77,7 @@ async def exportar_reporte_bpa(
     reporte = await use_case.execute(usuario.id, fecha_desde, fecha_hasta, device_id)
 
     auditoria_repository = SQLAlchemyAuditLogRepository(session)
-    await AuditarAccionCriticaUseCase(auditoria_repository).execute(
+    await AuditarAccionCriticaUseCase(auditoria_repository, trazabilidad_repository).execute(
         usuario_id=usuario.id,
         accion="EXPORTAR_REPORTE_BPA",
         recurso="reportes/bpa",
@@ -116,7 +116,7 @@ async def exportar_reporte_bpa_pdf(
     fecha_hasta: datetime,
     session: DbSessionDep,
     request: Request,
-    usuario=Depends(require_roles(Rol.FARMACEUTICO, Rol.ADMINISTRADOR)),
+    usuario=Depends(require_roles(Rol.FARMACEUTICO, Rol.ADMINISTRADOR, Rol.AUDITOR)),
     device_id: str | None = None,
 ) -> StreamingResponse:
     """RF-13 / HU-38: descarga el reporte BPA del período en PDF, incluyendo el
@@ -146,7 +146,9 @@ async def exportar_reporte_bpa_pdf(
         device_id=device_id,
     )
 
-    await AuditarAccionCriticaUseCase(SQLAlchemyAuditLogRepository(session)).execute(
+    await AuditarAccionCriticaUseCase(
+        SQLAlchemyAuditLogRepository(session), trazabilidad_repository
+    ).execute(
         usuario_id=usuario.id,
         accion="EXPORTAR_REPORTE_BPA_PDF",
         recurso="reportes/bpa/pdf",

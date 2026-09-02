@@ -66,7 +66,9 @@ async def registrar_checklist(
     except DomainError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    await AuditarAccionCriticaUseCase(SQLAlchemyAuditLogRepository(session)).execute(
+    await AuditarAccionCriticaUseCase(
+        SQLAlchemyAuditLogRepository(session), SQLAlchemyTrazabilidadRepository(session)
+    ).execute(
         usuario_id=usuario.id,
         accion="CHECKLIST_BPA_REGISTRADO",
         recurso=f"checklist-bpa/{body.fecha}",

@@ -56,6 +56,7 @@ async def ingestar_lectura(
         registro_dispositivos_estricto=settings.device_registry_estricto,
         audit_log_repository=SQLAlchemyAuditLogRepository(session),
         notificacion_service=NotificacionService(settings),
+        ventana_normalizacion_alerta_minutos=settings.alerta_ventana_normalizacion_minutos,
     )
     lectura = LecturaTermica(
         device_id=body.device_id,
@@ -131,7 +132,7 @@ async def _emitir_eventos_sse(
 @router.get("", response_model=list[LecturaResponse])
 async def listar_historial(
     session: DbSessionDep,
-    _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO)),
+    _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO, Rol.AUDITOR)),
     device_id: str | None = None,
     nivel_riesgo: str | None = None,
     estado_conectividad: str | None = None,
@@ -140,6 +141,13 @@ async def listar_historial(
     limite: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> list[LecturaResponse]:
+    # HU-36 criterio 3: la validación de rango invertido no puede depender
+    # solo del frontend — una llamada directa a la API también se rechaza.
+    if desde is not None and hasta is not None and desde > hasta:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="desde no puede ser posterior a hasta",
+        )
     lectura_repository = SQLAlchemyLecturaRepository(session)
     use_case = ConsultarHistorialTermicoUseCase(lectura_repository)
     lecturas = await use_case.execute(
@@ -158,7 +166,7 @@ async def listar_historial(
 async def obtener_lectura(
     lectura_id: UUID,
     session: DbSessionDep,
-    _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO)),
+    _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO, Rol.AUDITOR)),
 ) -> LecturaResponse:
     lectura_repository = SQLAlchemyLecturaRepository(session)
     lectura = await lectura_repository.obtener_por_id(lectura_id)
