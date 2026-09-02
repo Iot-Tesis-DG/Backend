@@ -15,6 +15,7 @@ def _to_entity(model: CorrectiveActionModel) -> AccionCorrectiva:
         usuario_id=model.usuario_id,
         descripcion=model.descripcion,
         created_at=model.created_at,
+        corrige_accion_id=model.corrige_accion_id,
     )
 
 
@@ -27,6 +28,7 @@ class SQLAlchemyAccionCorrectivaRepository(IAccionCorrectivaRepository):
             alert_id=accion.alert_id,
             usuario_id=accion.usuario_id,
             descripcion=accion.descripcion,
+            corrige_accion_id=accion.corrige_accion_id,
         )
         self._session.add(model)
         await self._session.flush()
@@ -37,3 +39,7 @@ class SQLAlchemyAccionCorrectivaRepository(IAccionCorrectivaRepository):
         stmt = select(CorrectiveActionModel).where(CorrectiveActionModel.alert_id == alert_id)
         result = await self._session.execute(stmt)
         return [_to_entity(m) for m in result.scalars().all()]
+
+    async def obtener_por_id(self, accion_id: UUID) -> AccionCorrectiva | None:
+        model = await self._session.get(CorrectiveActionModel, accion_id)
+        return _to_entity(model) if model else None
