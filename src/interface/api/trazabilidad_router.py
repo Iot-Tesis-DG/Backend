@@ -1,11 +1,15 @@
+from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from src.application.use_cases.auditar_accion_critica import AuditarAccionCriticaUseCase
 from src.application.use_cases.gestionar_corrupcion_cadena import AislarCorrupcionUseCase
 from src.application.use_cases.registrar_hash_encadenado import RegistrarHashEncadenadoUseCase
-from src.application.use_cases.verificar_integridad_registro import VerificarIntegridadRegistroUseCase
+from src.application.use_cases.verificar_integridad_registro import (
+    VerificarIntegridadPorDispositivoYPeriodoUseCase,
+    VerificarIntegridadRegistroUseCase,
+)
 from src.domain.value_objects.rol import Rol
 from src.infrastructure.database.repositories.audit_log_repository import (
     SQLAlchemyAuditLogRepository,
@@ -20,8 +24,10 @@ from src.interface.api.mappers import trazabilidad_to_response
 from src.interface.api.schemas import (
     DetalleInconsistenciaResponse,
     EstadoCadenaResponse,
+    EstadoRegistroSegmentoResponse,
     TrazabilidadResponse,
     VerificacionIntegridadResponse,
+    VerificacionSegmentoResponse,
 )
 
 router = APIRouter(prefix="/api/trazabilidad", tags=["trazabilidad"])
@@ -30,7 +36,7 @@ router = APIRouter(prefix="/api/trazabilidad", tags=["trazabilidad"])
 @router.get("", response_model=list[TrazabilidadResponse])
 async def listar_trazabilidad(
     session: DbSessionDep,
-    _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO)),
+    _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO, Rol.AUDITOR)),
     tipo_evento: str | None = None,
     device_id: str | None = None,
     limite: int = Query(default=100, ge=1, le=1000),
@@ -54,7 +60,7 @@ async def listar_trazabilidad(
 )
 async def verificar_integridad(
     session: DbSessionDep,
-    _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO)),
+    _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO, Rol.AUDITOR)),
 ) -> VerificacionIntegridadResponse:
     """HU-26 + HU-47 Escenarios 1-2: si detecta corrupción, además notifica
     (flag global, snapshot forense, evento de emergencia encadenado)."""
@@ -82,10 +88,66 @@ async def verificar_integridad(
     )
 
 
+@router.get(
+    "/verificar-dispositivo",
+    response_model=VerificacionSegmentoResponse,
+    dependencies=[limitar_por_usuario("trazabilidad_verificar_dispositivo", 10, 60)],
+)
+async def verificar_integridad_por_dispositivo(
+    session: DbSessionDep,
+    request: Request,
+    device_id: str,
+    desde: datetime,
+    hasta: datetime,
+    usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO, Rol.AUDITOR)),
+) -> VerificacionSegmentoResponse:
+    """HU-37: verificación de integridad acotada a un dispositivo y periodo
+    (a diferencia de /verificar, que recorre la cadena global completa)."""
+    if desde > hasta:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="desde no puede ser posterior a hasta",
+        )
+    repositorio = SQLAlchemyTrazabilidadRepository(session)
+    use_case = VerificarIntegridadPorDispositivoYPeriodoUseCase(repositorio)
+    resultado = await use_case.execute(device_id, desde, hasta)
+
+    # HU-37 criterio 3: constancia verificable de la revisión, append-only,
+    # encadenada — no solo el resultado devuelto al usuario que la pidió.
+    await RegistrarHashEncadenadoUseCase(repositorio).execute(
+        tipo_evento="VERIFICACION_INTEGRIDAD",
+        payload={
+            "device_id": device_id,
+            "desde": desde.isoformat(),
+            "hasta": hasta.isoformat(),
+            "integra": resultado.integra,
+            "total_bloques_verificados": resultado.total_bloques_verificados,
+        },
+        device_id=device_id,
+        usuario_id=usuario.id,
+    )
+    await session.commit()
+
+    return VerificacionSegmentoResponse(
+        device_id=resultado.device_id,
+        desde=resultado.desde,
+        hasta=resultado.hasta,
+        integra=resultado.integra,
+        total_bloques_verificados=resultado.total_bloques_verificados,
+        registros_del_dispositivo=[
+            EstadoRegistroSegmentoResponse(
+                id=r.id, tipo_evento=r.tipo_evento, timestamp=r.timestamp, integro=r.integro
+            )
+            for r in resultado.registros_del_dispositivo
+        ],
+        primer_registro_inconsistente=resultado.primer_registro_inconsistente,
+    )
+
+
 @router.get("/estado", response_model=EstadoCadenaResponse)
 async def obtener_estado_cadena(
     session: DbSessionDep,
-    _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO)),
+    _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO, Rol.AUDITOR)),
 ) -> EstadoCadenaResponse:
     """HU-47 Escenario 2: banner de advertencia en dashboards mientras cadena_comprometida=true."""
     comprometida = await SQLAlchemyCorrupcionRepository(session).cadena_comprometida()
@@ -112,7 +174,9 @@ async def aislar_corrupcion(
     # intervención manual más sensible del sistema. Antes solo dejaba rastro en
     # la propia cadena y sin autor, así que la bitácora no podía responder
     # quién puso la evidencia en cuarentena ni desde dónde.
-    await AuditarAccionCriticaUseCase(SQLAlchemyAuditLogRepository(session)).execute(
+    await AuditarAccionCriticaUseCase(
+        SQLAlchemyAuditLogRepository(session), SQLAlchemyTrazabilidadRepository(session)
+    ).execute(
         usuario_id=admin.id,
         accion="CADENA_CORRUPCION_AISLADA",
         recurso=f"trazabilidad/corrupcion/{registro_id}",
