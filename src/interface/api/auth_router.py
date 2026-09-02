@@ -74,7 +74,21 @@ async def login(
 ) -> TokenResponse:
     limiter = request.app.state.login_rate_limiter
     ip = _ip_cliente(request)
+    auditoria = AuditarAccionCriticaUseCase(
+        SQLAlchemyAuditLogRepository(session), SQLAlchemyTrazabilidadRepository(session)
+    )
     if limiter.bloqueado(ip):
+        # HU-50 criterio 2: un evento administrativo DISTINTO de cada intento
+        # fallido individual, visible en el panel de seguridad, sin afirmar
+        # que se trata de un ataque confirmado — solo que se superó el umbral.
+        await auditoria.execute(
+            usuario_id=None,
+            accion="UMBRAL_INTENTOS_FALLIDOS_EXCEDIDO",
+            recurso="auth/login",
+            detalle={"email": enmascarar_email(form_data.username)},
+            ip_origen=ip,
+        )
+        await session.commit()
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Demasiados intentos fallidos. Intenta nuevamente en unos minutos.",
@@ -82,7 +96,6 @@ async def login(
         )
 
     usuario_repository = SQLAlchemyUsuarioRepository(session)
-    auditoria = AuditarAccionCriticaUseCase(SQLAlchemyAuditLogRepository(session))
     use_case = AutenticarUsuarioUseCase(usuario_repository, jwt_handler)
     try:
         resultado = await use_case.execute(form_data.username, form_data.password)
@@ -152,7 +165,9 @@ async def login_google(
             headers={"Retry-After": str(limiter.segundos_para_reintentar(ip))},
         )
 
-    auditoria = AuditarAccionCriticaUseCase(SQLAlchemyAuditLogRepository(session))
+    auditoria = AuditarAccionCriticaUseCase(
+        SQLAlchemyAuditLogRepository(session), SQLAlchemyTrazabilidadRepository(session)
+    )
     use_case = AutenticarConGoogleUseCase(
         SQLAlchemyUsuarioRepository(session),
         jwt_handler,
@@ -268,7 +283,9 @@ async def logout(
     payload = jwt_handler.decodificar_token(token)
     request.app.state.token_revocation.registrar(payload.jti, payload.exp.timestamp())
 
-    auditoria = AuditarAccionCriticaUseCase(SQLAlchemyAuditLogRepository(session))
+    auditoria = AuditarAccionCriticaUseCase(
+        SQLAlchemyAuditLogRepository(session), SQLAlchemyTrazabilidadRepository(session)
+    )
     await auditoria.execute(
         usuario_id=usuario.id,
         accion="LOGOUT",

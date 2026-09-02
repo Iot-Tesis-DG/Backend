@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -29,8 +30,25 @@ class SQLAlchemyAuditLogRepository(IAuditLogRepository):
         self._session.add(model)
         await self._session.flush()
 
-    async def listar(self, limite: int = 100, offset: int = 0) -> list[dict]:
-        stmt = select(AuditLogModel).order_by(AuditLogModel.created_at.desc()).limit(limite).offset(offset)
+    async def listar(
+        self,
+        limite: int = 100,
+        offset: int = 0,
+        desde: datetime | None = None,
+        hasta: datetime | None = None,
+        usuario_id: UUID | None = None,
+        accion: str | None = None,
+    ) -> list[dict]:
+        stmt = select(AuditLogModel)
+        if desde is not None:
+            stmt = stmt.where(AuditLogModel.created_at >= desde)
+        if hasta is not None:
+            stmt = stmt.where(AuditLogModel.created_at <= hasta)
+        if usuario_id is not None:
+            stmt = stmt.where(AuditLogModel.usuario_id == usuario_id)
+        if accion is not None:
+            stmt = stmt.where(AuditLogModel.accion == accion)
+        stmt = stmt.order_by(AuditLogModel.created_at.desc()).limit(limite).offset(offset)
         result = await self._session.execute(stmt)
         return [
             {

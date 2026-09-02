@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from datetime import datetime
 from uuid import UUID
 
 
@@ -14,4 +15,15 @@ class IAuditLogRepository(ABC):
     ) -> None: ...
 
     @abstractmethod
-    async def listar(self, limite: int = 100, offset: int = 0) -> list[dict]: ...
+    async def listar(
+        self,
+        limite: int = 100,
+        offset: int = 0,
+        desde: datetime | None = None,
+        hasta: datetime | None = None,
+        usuario_id: UUID | None = None,
+        accion: str | None = None,
+    ) -> list[dict]:
+        """HU-42/HU-50: el auditor filtra la bitácora por periodo, actor o
+        tipo de acción y obtiene una vista de solo lectura."""
+        ...
