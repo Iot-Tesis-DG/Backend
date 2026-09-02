@@ -66,6 +66,12 @@ class ResultadoInferencia:
     origen: str
     estado_inferencia: str = ESTADO_COMPLETADA
     motivo_no_inferencia: str | None = None
+    # HU-47: evidencia completa de la inferencia para auditoría — probabilidad
+    # por cada clase (no solo la ganadora) y el vector de features exacto que
+    # se le pasó al modelo. None cuando no hubo inferencia real de Random
+    # Forest (regla directa, modelo no disponible, fallo_sensor).
+    probabilidades_por_clase: dict[str, float] | None = None
+    vector_features: dict[str, float] | None = None
 
 
 class RandomForestRiesgoService:
@@ -220,12 +226,26 @@ class RandomForestRiesgoService:
         indice = int(probabilidades.argmax())
         nivel_modelo = NivelRiesgo(modelo.classes_[indice])
         confianza = float(probabilidades[indice])
+        # HU-47: probabilidad por CADA clase que el modelo conoce, no solo la
+        # ganadora — necesario para que una auditoría explique la decisión.
+        probabilidades_por_clase = {
+            str(clase): float(prob) for clase, prob in zip(modelo.classes_, probabilidades, strict=True)
+        }
+        vector_features = dict(zip(FEATURE_NAMES, features.to_array(), strict=True))
 
         if _SEVERIDAD[nivel_regla] > _SEVERIDAD[nivel_modelo]:
             # Regla determina nivel, no probabilidad Random Forest. Nunca
-            # presentar 100 % como confianza de IA inexistente.
-            return ResultadoInferencia(nivel_regla, None, ORIGEN_REGLA_SALVAGUARDA, ESTADO_COMPLETADA)
-        return ResultadoInferencia(nivel_modelo, confianza, ORIGEN_MODELO, ESTADO_COMPLETADA)
+            # presentar 100 % como confianza de IA inexistente. Se conserva
+            # igual la evidencia de lo que el modelo predijo (HU-47), aunque
+            # su clase no haya prevalecido.
+            return ResultadoInferencia(
+                nivel_regla, None, ORIGEN_REGLA_SALVAGUARDA, ESTADO_COMPLETADA,
+                probabilidades_por_clase=probabilidades_por_clase, vector_features=vector_features,
+            )
+        return ResultadoInferencia(
+            nivel_modelo, confianza, ORIGEN_MODELO, ESTADO_COMPLETADA,
+            probabilidades_por_clase=probabilidades_por_clase, vector_features=vector_features,
+        )
 
     def predecir(self, features: FeaturesRiesgoTermico) -> NivelRiesgo:
         return self.inferir(features).nivel
