@@ -13,7 +13,13 @@ from src.infrastructure.ai.reglas_riesgo import clasificar_por_regla
 
 logger = logging.getLogger("infrastructure.ai.random_forest_service")
 
-_CLASES_ESPERADAS = frozenset(n.value for n in NivelRiesgo)
+# HU-18 criterio 4 (backlog 54 HU): el modelo Random Forest es un
+# clasificador BINARIO — nunca utiliza excursion_critica como clase. Esa
+# clase es exclusiva de la regla determinista de rango 2-8 °C, separada del
+# pipeline de IA (ver reglas_riesgo.clasificar_por_regla). Un artefacto que
+# declare excursion_critica entre sus clases se rechaza al cargar: no es un
+# modelo compatible con este contrato, sin importar su exactitud.
+_CLASES_ESPERADAS = frozenset({NivelRiesgo.NORMAL.value, NivelRiesgo.RIESGO_PREVENTIVO.value})
 
 DEFAULT_MODEL_PATH = Path(__file__).parent / "models" / "random_forest_termico.pkl"
 DEFAULT_METRICS_PATH = Path(__file__).parent / "models" / "training_metrics.json"

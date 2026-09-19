@@ -31,7 +31,17 @@ class ILecturaRepository(ABC):
     async def obtener_por_device_y_timestamp(
         self, device_id: str, timestamp: datetime
     ) -> LecturaTermica | None:
-        """Deduplicación/idempotencia (RF-07): localiza una lectura ya persistida
-        para el mismo dispositivo y el mismo instante exacto, de forma que un
-        reenvío MQTT (PUBACK perdido, QoS1) no genere un registro duplicado."""
+        """Deduplicación/idempotencia de compatibilidad (RF-07): localiza una
+        lectura ya persistida para el mismo dispositivo y el mismo instante
+        exacto. Usada cuando el payload no trae boot_id/seq_no (firmware
+        anterior); ver obtener_por_device_boot_seq() para la clave preferida."""
+        ...
+
+    @abstractmethod
+    async def obtener_por_device_boot_seq(
+        self, device_id: str, boot_id: int, seq_no: int
+    ) -> LecturaTermica | None:
+        """HU-11: idempotencia real por identidad lógica de la lectura
+        (device_id+boot_id+seq_no) — clave preferida sobre
+        obtener_por_device_y_timestamp cuando el payload la declara."""
         ...

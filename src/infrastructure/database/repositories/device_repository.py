@@ -31,6 +31,9 @@ def _to_dict(model: DeviceModel) -> dict:
         "fecha_instalacion": model.fecha_instalacion,
         "instalado_por": model.instalado_por,
         "observaciones_instalacion": model.observaciones_instalacion,
+        "responsable_nombre": model.responsable_nombre,
+        "responsable_email": model.responsable_email,
+        "responsable_telefono": model.responsable_telefono,
     }
 
 
@@ -211,6 +214,23 @@ class SQLAlchemyDeviceRepository(IDeviceRepository):
         model.fecha_instalacion = fecha_instalacion
         model.instalado_por = instalado_por
         model.observaciones_instalacion = observaciones
+        await self._session.flush()
+        return _to_dict(model)
+
+    # ── HU-53/HU-54: responsable registrado (destinatario de notificaciones) ─
+    async def actualizar_responsable(
+        self,
+        device_id: str,
+        nombre: str | None,
+        email: str | None,
+        telefono: str | None,
+    ) -> dict:
+        model = await self._session.get(DeviceModel, device_id)
+        if model is None:
+            raise ValueError(f"Dispositivo {device_id} no encontrado")
+        model.responsable_nombre = nombre
+        model.responsable_email = email
+        model.responsable_telefono = telefono
         await self._session.flush()
         return _to_dict(model)
 

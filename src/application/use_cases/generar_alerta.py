@@ -8,6 +8,7 @@ from src.domain.repositories.i_alerta_repository import IAlertaRepository
 from src.domain.value_objects.nivel_riesgo import NivelRiesgo
 
 if TYPE_CHECKING:
+    from src.domain.repositories.i_device_repository import IDeviceRepository
     from src.infrastructure.notifications.notificacion_service import NotificacionService
 
 logger = logging.getLogger("application.generar_alerta")
@@ -51,10 +52,17 @@ class GenerarAlertaUseCase:
         alerta_repository: IAlertaRepository,
         notificacion_service: "NotificacionService | None" = None,
         ventana_normalizacion_minutos: int = COOLDOWN_MINUTOS,
+        device_repository: "IDeviceRepository | None" = None,
     ) -> None:
         self._alerta_repository = alerta_repository
         self._notificacion_service = notificacion_service
         self._ventana_normalizacion_minutos = ventana_normalizacion_minutos
+        # HU-53/HU-54: resuelve el responsable registrado del dispositivo
+        # para notificar a su contacto propio en vez de uno global fijo.
+        # None es válido (algunos llamadores no lo inyectan): se notifica
+        # igual, cayendo al destinatario global de correo (ver
+        # NotificacionService.notificar_excursion_critica) y sin SMS.
+        self._device_repository = device_repository
 
     async def _avisar_si_es_apertura_critica(
         self,
@@ -73,11 +81,20 @@ class GenerarAlertaUseCase:
         # Ya había un episodio crítico abierto: es continuación, no un evento nuevo.
         if episodio_previo is not None and episodio_previo.nivel_riesgo == NivelRiesgo.EXCURSION_CRITICA:
             return
+        email_destino: str | None = None
+        telefono_destino: str | None = None
+        if self._device_repository is not None:
+            dispositivo = await self._device_repository.obtener(alerta.device_id)
+            if dispositivo is not None:
+                email_destino = dispositivo.get("responsable_email")
+                telefono_destino = dispositivo.get("responsable_telefono")
         try:
             await self._notificacion_service.notificar_excursion_critica(
                 device_id=alerta.device_id,
                 temperatura=temperatura,
                 timestamp=_a_utc(timestamp).isoformat(),
+                email_destino=email_destino,
+                telefono_destino=telefono_destino,
             )
         except Exception:  # pragma: no cover - defensa: notificar nunca rompe la ingesta
             logger.exception("Fallo al notificar la excursión crítica de %s", alerta.device_id)

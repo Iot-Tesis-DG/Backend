@@ -183,6 +183,15 @@ async def _procesar_evento_mqtt(message: aiomqtt.Message, broadcaster: SSEBroadc
                 accion, tipo_sse = "BUFFER_SATURADO", "saturacion_buffer"
             case TipoEventoDispositivo.WIFI_RECONEXION_PROLONGADA:
                 accion, tipo_sse = "WIFI_RECONEXION_PROLONGADA", "reconexion_prolongada"
+            case TipoEventoDispositivo.CONMUTACION_RESPALDO:
+                # HU-52 escenario 1: solo se audita/traza — el nodo sigue
+                # midiendo y persistiendo en LittleFS (HU-06) igual que
+                # cualquier otro periodo, con o sin red.
+                accion, tipo_sse = "CONMUTACION_RESPALDO", "conmutacion_respaldo"
+            case TipoEventoDispositivo.RESPALDO_BAJO:
+                # HU-52 escenario 3: diagnóstico antes de un eventual apagado
+                # ordenado del nodo — no implica que ya se haya apagado.
+                accion, tipo_sse = "RESPALDO_BAJO", "respaldo_bajo"
             case TipoEventoDispositivo.FIRMWARE_UPDATE:
                 if evento.firmware_version:
                     await device_repository.actualizar_firmware_version(
@@ -197,6 +206,7 @@ async def _procesar_evento_mqtt(message: aiomqtt.Message, broadcaster: SSEBroadc
             recurso=f"dispositivos/{evento.device_id}",
             detalle=detalle_auditoria,
             ip_origen=None,
+            device_id=evento.device_id,
         )
         await session.commit()
 
@@ -269,6 +279,9 @@ async def _procesar_lectura_mqtt(
             estado_conectividad=payload.estado_conectividad,
             reading_id=payload.reading_id,
             schema_version=payload.schema_version,
+            boot_id=payload.boot_id,
+            seq_no=payload.seq_no,
+            time_quality=payload.time_quality,
             payload=evidencia_edge(
                 firmware_version=payload.firmware_version,
                 duracion_apertura_segundos=payload.duracion_apertura_segundos,
@@ -276,9 +289,16 @@ async def _procesar_lectura_mqtt(
         )
         # Reenvío QoS1: no publicar un segundo SSE lógico. El caso de uso
         # conserva misma garantía en BD; este guard evita notificación doble.
-        existente = await lectura_repository.obtener_por_device_y_timestamp(
-            payload.device_id, payload.timestamp
-        )
+        # HU-11: con boot_id+seq_no (firmware nuevo) esa es la identidad real
+        # de la lectura; sin ellos se conserva device_id+timestamp.
+        if payload.boot_id is not None and payload.seq_no is not None:
+            existente = await lectura_repository.obtener_por_device_boot_seq(
+                payload.device_id, payload.boot_id, payload.seq_no
+            )
+        else:
+            existente = await lectura_repository.obtener_por_device_y_timestamp(
+                payload.device_id, payload.timestamp
+            )
         if existente is not None:
             logger.info("Lectura MQTT duplicada omitida: %s/%s", payload.device_id, payload.timestamp)
             # HU-07 Escenario 2: el nodo puede reenviar un bloque cuyo COMMIT

@@ -33,6 +33,10 @@ def _to_entity(model: ThermalReadingModel) -> LecturaTermica:
         riesgo_efectivo=NivelRiesgo(model.riesgo_efectivo) if model.riesgo_efectivo else None,
         probabilidades_ia=model.probabilidades_ia,
         vector_features_ia=model.vector_features_ia,
+        boot_id=model.boot_id,
+        seq_no=model.seq_no,
+        time_quality=model.time_quality,
+        received_at=model.received_at,
     )
 
 
@@ -69,6 +73,10 @@ class SQLAlchemyLecturaRepository(ILecturaRepository):
             riesgo_efectivo=lectura.riesgo_efectivo.value if lectura.riesgo_efectivo else None,
             probabilidades_ia=lectura.probabilidades_ia,
             vector_features_ia=lectura.vector_features_ia,
+            boot_id=lectura.boot_id,
+            seq_no=lectura.seq_no,
+            time_quality=lectura.time_quality,
+            received_at=lectura.received_at,
         )
         self._session.add(model)
         await self._session.flush()
@@ -120,6 +128,18 @@ class SQLAlchemyLecturaRepository(ILecturaRepository):
         stmt = select(ThermalReadingModel).where(
             ThermalReadingModel.device_id == device_id,
             ThermalReadingModel.timestamp == timestamp,
+        )
+        result = await self._session.execute(stmt)
+        model = result.scalar_one_or_none()
+        return _to_entity(model) if model else None
+
+    async def obtener_por_device_boot_seq(
+        self, device_id: str, boot_id: int, seq_no: int
+    ) -> LecturaTermica | None:
+        stmt = select(ThermalReadingModel).where(
+            ThermalReadingModel.device_id == device_id,
+            ThermalReadingModel.boot_id == boot_id,
+            ThermalReadingModel.seq_no == seq_no,
         )
         result = await self._session.execute(stmt)
         model = result.scalar_one_or_none()

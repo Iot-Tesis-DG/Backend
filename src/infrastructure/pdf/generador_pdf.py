@@ -310,12 +310,21 @@ class GeneradorReporteBPAPDF:
         color_fondo = PINO_CLARO if integra else colors.HexColor("#FBE9E7")
         color_borde = VERDE if integra else ROJO
 
+        # HU-38 criterio 2: fecha de la verificación y una referencia/digest
+        # reproducible — no hace falta imprimir el hash de cada lectura, pero
+        # sí un valor verificable que identifique el estado de la cadena en
+        # el momento de generar el reporte.
+        fecha_verificacion = veredicto.get("verificado_en", "")
+        digest = veredicto.get("digest_cadena", "")
+
         if integra:
             titulo = "✓ Cadena de trazabilidad íntegra"
             detalle = (
                 f"Se verificaron <b>{veredicto.get('total_registros', 0)}</b> registros encadenados "
                 "mediante SHA-256. Cada eslabón reproduce el hash esperado a partir del hash anterior, "
-                "su marca temporal y su contenido: ningún registro del período fue alterado tras su emisión."
+                "su marca temporal y su contenido: ningún registro del período fue alterado tras su emisión.<br/>"
+                f"Verificado el: <b>{fecha_verificacion}</b><br/>"
+                f"Referencia de la cadena (último hash íntegro): <font face='Courier'>{digest}</font>"
             )
         else:
             titulo = "✗ Cadena de trazabilidad comprometida"
@@ -324,7 +333,8 @@ class GeneradorReporteBPAPDF:
                 f"La verificación detectó una inconsistencia en la posición <b>{posicion}</b> de la cadena, "
                 f"con <b>{veredicto.get('registros_posteriores_afectados', 0)}</b> registros posteriores afectados. "
                 "El contenido de este reporte debe considerarse NO verificable hasta que un administrador "
-                "aísle el registro corrupto y restaure la cadena (HU-47)."
+                "aísle el registro corrupto y restaure la cadena (HU-47).<br/>"
+                f"Verificado el: <b>{fecha_verificacion}</b>"
             )
 
         contenido = [
@@ -576,8 +586,11 @@ class GeneradorReporteBPAPDF:
                 "Este documento fue generado automáticamente por el sistema ThermoTrace a partir de los "
                 "registros almacenados. Su contenido es verificable: la sección 2 declara el resultado de "
                 "recomputar la cadena de hashes SHA-256 sobre la totalidad de los eventos registrados. "
-                "Elaborado en el marco de la tesis de monitoreo IoT de cadena de frío farmacéutica, "
-                "conforme al Manual de Buenas Prácticas de Almacenamiento (RM N.º 132-2015/MINSA).",
+                "Elaborado en el marco de la tesis de monitoreo IoT de cadena de frío farmacéutica, como "
+                "referencia frente al Manual de Buenas Prácticas de Almacenamiento (RM N.º 132-2015/MINSA).<br/><br/>"
+                "<b>Este documento constituye evidencia del monitoreo y la trazabilidad térmica del período "
+                "indicado; no declara por sí mismo cumplimiento sanitario integral.</b> La certificación "
+                "sanitaria corresponde exclusivamente a la autoridad competente (DIGEMID).",
                 e["nota"],
             ),
         ]

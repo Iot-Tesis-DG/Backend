@@ -30,22 +30,33 @@ class AislarCorrupcionUseCase:
         self._registrar_hash = registrar_hash
 
     async def execute(self, registro_corrupto_id: UUID, usuario_id: UUID | None = None) -> None:
-        registros = await self._trazabilidad_repository.listar_todos_ordenados()
-        ids_posteriores: list[UUID] = []
-        encontrado = False
-        for registro in registros:
-            if encontrado:
-                ids_posteriores.append(registro.id)
-            if registro.id == registro_corrupto_id:
-                encontrado = True
+        # HU-25: el aislamiento y el reinicio en génesis afectan SOLO a la
+        # cadena del registro corrupto — otras unidades monitoreadas (u otros
+        # eventos de sistema) no forman parte del mismo hallazgo y no deben
+        # marcarse como afectadas ni reiniciarse.
+        todos = await self._trazabilidad_repository.listar_todos_ordenados()
+        corrupto = next((r for r in todos if r.id == registro_corrupto_id), None)
+        if corrupto is None:
+            raise ValueError(f"Registro de trazabilidad no encontrado: {registro_corrupto_id}")
+
+        ids_posteriores = [
+            r.id
+            for r in todos
+            if r.chain_id == corrupto.chain_id
+            and corrupto.chain_seq is not None
+            and r.chain_seq is not None
+            and r.chain_seq > corrupto.chain_seq
+        ]
 
         await self._trazabilidad_repository.marcar_corrupto(registro_corrupto_id)
         await self._trazabilidad_repository.marcar_posteriores_como_afectados(ids_posteriores)
 
-        # Bloque génesis: los registros futuros inician una cadena nueva e
-        # independiente. El histórico hasta el punto de ruptura exacto sigue
-        # siendo íntegro y verificable; solo el bloque corrupto y lo posterior
-        # que dependía de él quedan marcados como "Cadena Rota / Aislada".
+        # Bloque génesis: los registros futuros de ESTA cadena inician un
+        # tramo nuevo e independiente (mismo chain_id, chain_seq sigue
+        # incrementando, previous_hash forzado a génesis). El histórico hasta
+        # el punto de ruptura exacto sigue siendo íntegro y verificable; solo
+        # el bloque corrupto y lo posterior de su misma cadena que dependía de
+        # él quedan marcados como "Cadena Rota / Aislada".
         await self._registrar_hash.execute(
             tipo_evento="REGISTRO_AISLADO_CORRUPCION",
             payload={
@@ -59,5 +70,6 @@ class AislarCorrupcionUseCase:
             },
             timestamp=datetime.now(tz=timezone.utc),
             previous_hash_forzado=GENESIS_HASH,
+            chain_id=corrupto.chain_id,
         )
         await self._corrupcion_repository.marcar_restaurada()

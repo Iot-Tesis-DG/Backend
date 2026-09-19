@@ -1,9 +1,9 @@
 {
   "model_name": "random_forest_thermal_risk",
-  "model_version": "3.0.0-reproducible",
-  "trained_at": "2026-07-23T01:48:50.335816+00:00",
+  "model_version": "4.0.0-binario",
+  "trained_at": "2026-09-19T00:59:44.878943+00:00",
   "sklearn_version": "1.9.0",
-  "python_version": "3.12.13",
+  "python_version": "3.14.5",
   "random_state": 42,
   "n_escenarios": 400,
   "n_samples": 10076,
@@ -22,7 +22,6 @@
     "estado_conectividad_online"
   ],
   "classes": [
-    "excursion_critica",
     "normal",
     "riesgo_preventivo"
   ],
@@ -48,7 +47,7 @@
     "warm_start": false
   },
   "particion": "GroupShuffleSplit + StratifiedGroupKFold, agrupado por escenario_id determinista (AIV-01)",
-  "correccion_respecto_v2": "escenario_id ya no usa uuid4() (entropÃ­a del SO); se deriva de f'esc-{random_state:04d}-{indice:05d}', determinista y reproducible.",
+  "correccion_respecto_v2": "escenario_id ya no usa uuid4() (entropía del SO); se deriva de f'esc-{random_state:04d}-{indice:05d}', determinista y reproducible.",
   "correccion_hash_respecto_v2": "model_hash se calcula UNA vez sobre el archivo .pkl ya guardado definitivamente (estimador puro, sin dict envolvente); el archivo no se vuelve a serializar tras calcular el hash (corrige AIV-06).",
   "ruido_sensores": {
     "temperatura_interna_std_c": 0.25,
@@ -56,58 +55,45 @@
     "humedad_std_pct": 1.0,
     "prob_mensaje_perdido": 0.08
   },
-  "dataset_hash": "36fef3457f205bd3262d96e629133fa9b3edf8f4f2779077a4614f87025efa2a:c94fc260bcad61781ed210164b585bdb6bf5ef779015810dafe401bc27cd356c",
-  "model_hash": "0294ad0a07a47b8975d6f6102ee7aab85109049a23104ebb81c445bfdf8d33d4",
-  "accuracy": 0.966765873015873,
-  "f1_weighted": 0.9671300273539583,
+  "dataset_hash": "587064339df86ff4c01c64dfebb10ed71bd459020b8a21e59668cb669f732e0e:b6c7078d8357be1100938a83b7ecfeb6046ebc15e3d61afce152b3e047bfc682",
+  "model_hash": "0dfcc05d1337ed6c75e1f15d3136739e5932252afbb030bfc9999ce30479d5a9",
+  "accuracy": 0.9756944444444444,
+  "f1_weighted": 0.9757362962618883,
   "classification_report": {
-    "excursion_critica": {
-      "precision": 0.9685534591194969,
-      "recall": 0.9777777777777777,
-      "f1-score": 0.9731437598736177,
-      "support": 315.0
-    },
     "normal": {
-      "precision": 0.9906176700547302,
-      "recall": 0.9708812260536398,
-      "f1-score": 0.9806501547987616,
+      "precision": 0.9853168469860897,
+      "recall": 0.9770114942528736,
+      "f1-score": 0.9811465948441709,
       "support": 1305.0
     },
     "riesgo_preventivo": {
-      "precision": 0.8926014319809069,
-      "recall": 0.9444444444444444,
-      "f1-score": 0.9177914110429448,
-      "support": 396.0
+      "precision": 0.9584487534626038,
+      "recall": 0.9732770745428974,
+      "f1-score": 0.9658060013956734,
+      "support": 711.0
     },
-    "accuracy": 0.966765873015873,
+    "accuracy": 0.9756944444444444,
     "macro avg": {
-      "precision": 0.9505908537183779,
-      "recall": 0.9643678160919539,
-      "f1-score": 0.9571951085717747,
+      "precision": 0.9718828002243467,
+      "recall": 0.9751442843978855,
+      "f1-score": 0.9734762981199221,
       "support": 2016.0
     },
     "weighted avg": {
-      "precision": 0.9679169474744561,
-      "recall": 0.966765873015873,
-      "f1-score": 0.9671300273539583,
+      "precision": 0.9758410461452175,
+      "recall": 0.9756944444444444,
+      "f1-score": 0.9757362962618883,
       "support": 2016.0
     }
   },
   "confusion_matrix": [
     [
-      308,
-      0,
-      7
+      1275,
+      30
     ],
     [
-      0,
-      1267,
-      38
-    ],
-    [
-      10,
-      12,
-      374
+      19,
+      692
     ]
   ],
   "cross_validation": {
@@ -115,26 +101,26 @@
     "scoring": "f1_weighted",
     "grouped_by": "escenario_id",
     "scores": [
-      0.976793024213482,
-      0.9731019790600363,
-      0.9724900961504845,
-      0.9709369191036525,
-      0.9701235666815752
+      0.9839551411583172,
+      0.9733371342945696,
+      0.9784283523774896,
+      0.9840133196433237,
+      0.9806977108186369
     ],
-    "mean": 0.9726891170418461,
-    "std": 0.0023110328729969705
+    "mean": 0.9800863316584675,
+    "std": 0.003976512703609036
   },
   "feature_importances": {
-    "temperatura_ambiental": 0.10668300746118341,
-    "humedad_ambiental": 0.005698540174752802,
-    "temperatura_interna": 0.40414746043300326,
-    "diferencia_sensores": 0.016539478276657187,
-    "duracion_fuera_rango": 0.18774435844676501,
-    "frecuencia_desviaciones": 0.16433490314906984,
-    "tendencia_termica": 0.11276928593238898,
-    "apertura_refrigerador": 0.0017612786419105339,
+    "temperatura_ambiental": 0.09273501942787823,
+    "humedad_ambiental": 0.005644175586772874,
+    "temperatura_interna": 0.41004903388287095,
+    "diferencia_sensores": 0.016721720277107235,
+    "duracion_fuera_rango": 0.16175197980526798,
+    "frecuencia_desviaciones": 0.22613099390622557,
+    "tendencia_termica": 0.08524765698387823,
+    "apertura_refrigerador": 0.0014081049203631217,
     "hora_evento": 0.0,
-    "estado_conectividad_online": 0.0003216874842688668
+    "estado_conectividad_online": 0.00031131520963582313
   },
   "rnf04": {
     "umbral": 0.85,
@@ -142,6 +128,6 @@
   },
   "baselines": {
     "mayoritario_f1_weighted": 0.5087349980642663,
-    "arbol_simple_f1_weighted": 0.9623238996264296
+    "arbol_simple_f1_weighted": 0.9683134803681345
   }
 }

@@ -120,6 +120,11 @@ class LecturaIngestRequest(_PeticionEstricta):
     estado_conectividad: Literal["online", "offline"] = "online"
     firmware_version: str | None = Field(default=None, max_length=20)
     duracion_apertura_segundos: int = Field(default=0, ge=0)
+    reading_id: str | None = Field(default=None, max_length=100)
+    schema_version: int | None = None
+    boot_id: int | None = Field(default=None, ge=0)
+    seq_no: int | None = Field(default=None, ge=0)
+    time_quality: Literal["synced", "unsynced"] | None = None
 
 
 class LecturaResponse(BaseModel):
@@ -213,6 +218,10 @@ class TrazabilidadResponse(BaseModel):
     timestamp: datetime
     previous_hash: str
     hash_actual: str
+    # HU-24/25: cadena de la unidad monitoreada (o "SISTEMA") y posición del
+    # eslabón dentro de ella.
+    chain_id: str
+    chain_seq: int | None = None
 
 
 class DetalleInconsistenciaResponse(BaseModel):
@@ -297,6 +306,10 @@ class DispositivoResponse(BaseModel):
     fecha_instalacion: date | None = None
     instalado_por: UUID | None = None
     observaciones_instalacion: str | None = None
+    # HU-53/HU-54: responsable registrado (destinatario de notificaciones).
+    responsable_nombre: str | None = None
+    responsable_email: str | None = None
+    responsable_telefono: str | None = None
 
 
 class DispositivoBajaRequest(_PeticionEstricta):
@@ -320,6 +333,15 @@ class InstalacionDispositivoRequest(_PeticionEstricta):
     ubicacion: str | None = Field(default=None, max_length=200)
     fecha_instalacion: date | None = None
     observaciones: str | None = Field(default=None, max_length=2000)
+
+
+class ResponsableDispositivoRequest(_PeticionEstricta):
+    """HU-53/HU-54: destinatario de las notificaciones de excursión crítica
+    de este dispositivo por correo y SMS."""
+
+    nombre: str | None = Field(default=None, max_length=120)
+    email: EmailStr | None = None
+    telefono: str | None = Field(default=None, max_length=20)
 
 
 class HistorialConfiguracionResponse(BaseModel):

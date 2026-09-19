@@ -36,7 +36,13 @@ class AuditarAccionCriticaUseCase:
         recurso: str,
         detalle: dict | None = None,
         ip_origen: str | None = None,
+        device_id: str | None = None,
     ) -> None:
+        """device_id (HU-25): cuando la acción auditada concierne a una
+        unidad monitoreada concreta (alerta, instalación, responsable de un
+        dispositivo), el eslabón de trazabilidad se encadena en la cadena de
+        ESE dispositivo en vez de en la cadena de sistema — es lo que permite
+        reconstruir el ciclo completo de una alerta por chain_id (HU-28)."""
         await self._audit_log_repository.registrar(
             usuario_id=usuario_id,
             accion=accion,
@@ -54,5 +60,6 @@ class AuditarAccionCriticaUseCase:
                     "ip_origen": ip_origen,
                 },
                 usuario_id=usuario_id,
+                device_id=device_id,
                 timestamp=datetime.now(tz=timezone.utc),
             )

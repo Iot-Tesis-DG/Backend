@@ -65,7 +65,12 @@ N_ESCENARIOS = 400
 TICKS_MIN, TICKS_MAX = 15, 35
 CV_FOLDS = 5
 F1_MINIMO_RNF04 = 0.85
-MODEL_VERSION = "3.0.0-reproducible"
+# 4.0.0: HU-16/17/18 (backlog 54 HU) — clasificador binario
+# (normal/riesgo_preventivo). excursion_critica deja de ser una clase del
+# modelo: pasa a ser exclusivamente el resultado de la regla determinista de
+# rango 2-8 °C, fuera de este pipeline (ver reglas_riesgo.clasificar_por_regla
+# y RandomForestRiesgoService._CLASES_ESPERADAS).
+MODEL_VERSION = "4.0.0-binario"
 
 RUIDO_TEMP_INTERNA_C = 0.25
 RUIDO_TEMP_AMBIENTE_C = 0.15

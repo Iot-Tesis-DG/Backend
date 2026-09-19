@@ -9,16 +9,6 @@ from src.domain.repositories.i_trazabilidad_repository import ITrazabilidadRepos
 from src.domain.value_objects.hash_encadenado import GENESIS_HASH, HashEncadenado
 from src.infrastructure.database.models import TraceabilityRecordModel
 
-# Clave arbitraria fija para el candado consultivo de PostgreSQL que serializa
-# la sección crítica "leer último hash + insertar siguiente eslabón" a nivel de
-# base de datos. Complementa (no sustituye) el asyncio.Lock de proceso en
-# RegistrarHashEncadenadoUseCase: el lock de proceso alcanza para un único
-# worker; pg_advisory_xact_lock además protege ante múltiples workers/instancias
-# escribiendo contra la misma base de datos. Se libera automáticamente al
-# terminar la transacción (variante _xact_). No tiene efecto en SQLite (los
-# tests con aiosqlite omiten esta sentencia, ver dialect check abajo).
-_CLAVE_CANDADO_CADENA_HASH = 911777001
-
 
 def _to_entity(model: TraceabilityRecordModel) -> RegistroTrazabilidad:
     return RegistroTrazabilidad(
@@ -27,6 +17,9 @@ def _to_entity(model: TraceabilityRecordModel) -> RegistroTrazabilidad:
         payload=model.payload,
         timestamp=model.timestamp,
         hash_encadenado=HashEncadenado(previous_hash=model.previous_hash, hash_actual=model.hash_actual),
+        chain_id=model.chain_id,
+        chain_seq=model.chain_seq,
+        hash_version=model.hash_version,
         device_id=model.device_id,
         usuario_id=model.usuario_id,
     )
@@ -45,46 +38,53 @@ class SQLAlchemyTrazabilidadRepository(ITrazabilidadRepository):
             timestamp=registro.timestamp,
             previous_hash=registro.previous_hash,
             hash_actual=registro.hash_actual,
+            chain_id=registro.chain_id,
+            chain_seq=registro.chain_seq,
+            hash_version=registro.hash_version,
         )
         self._session.add(model)
         await self._session.flush()
         await self._session.refresh(model)
         return _to_entity(model)
 
-    async def obtener_ultimo_hash(self) -> str:
+    async def obtener_ultimo_eslabon(self, chain_id: str) -> tuple[str, int]:
         if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
-            # Defensa en profundidad multi-worker: serializa a nivel de BD.
+            # Candado por cadena (hashtext(chain_id) -> int, cast implícito a
+            # bigint): serializa lectura-luego-escritura SOLO dentro de la
+            # misma cadena; cadenas de dispositivos distintos no se bloquean
+            # entre sí. Se libera automáticamente al terminar la transacción
+            # (variante _xact_). Sin efecto en SQLite (tests con aiosqlite).
             await self._session.execute(
-                text("SELECT pg_advisory_xact_lock(:clave)"),
-                {"clave": _CLAVE_CANDADO_CADENA_HASH},
+                text("SELECT pg_advisory_xact_lock(hashtext(:chain_id))"),
+                {"chain_id": chain_id},
             )
-        # Desempate por `id` además de `created_at`.
-        #
-        # `created_at` se genera en Python con resolución de microsegundos, así
-        # que un empate es improbable — pero no imposible. Y si ocurriera, lo
-        # grave no es el empate en sí: es que ESTA consulta (camino de
-        # escritura, DESC) y `listar_todos_ordenados()` (camino de
-        # verificación, ASC) podrían resolverlo en sentidos distintos. La
-        # cadena se habría escrito en un orden y se verificaría en otro,
-        # denunciando una corrupción inexistente sobre evidencia intacta.
-        #
-        # `id` es un UUID4, no monótono: no aporta orden cronológico. Aporta lo
-        # único que hace falta aquí, que es que ambos caminos desempaten igual.
-        stmt = select(TraceabilityRecordModel.hash_actual).order_by(
-            TraceabilityRecordModel.created_at.desc(),
-            TraceabilityRecordModel.id.desc(),
-        ).limit(1)
-        result = await self._session.execute(stmt)
-        hash_actual = result.scalar_one_or_none()
-        return hash_actual or GENESIS_HASH
-
-    async def listar_todos_ordenados(self) -> list[RegistroTrazabilidad]:
-        # Mismo criterio de desempate que `obtener_ultimo_hash()`, en sentido
-        # inverso: los dos caminos deben recorrer la cadena en el mismo orden.
-        stmt = select(TraceabilityRecordModel).order_by(
-            TraceabilityRecordModel.created_at.asc(),
-            TraceabilityRecordModel.id.asc(),
+        # Desempate por `id` además de `chain_seq`/`created_at`: incluso dentro
+        # de una misma cadena, dos inserciones podrían compartir created_at por
+        # resolución de reloj; el mismo criterio de desempate debe usarse aquí
+        # (camino de escritura) y en listar_todos_ordenados (camino de
+        # verificación) para que ambos recorran la cadena en el mismo orden.
+        stmt = (
+            select(TraceabilityRecordModel.hash_actual, TraceabilityRecordModel.chain_seq)
+            .where(TraceabilityRecordModel.chain_id == chain_id)
+            .order_by(TraceabilityRecordModel.chain_seq.desc(), TraceabilityRecordModel.id.desc())
+            .limit(1)
         )
+        result = await self._session.execute(stmt)
+        fila = result.one_or_none()
+        if fila is None:
+            return GENESIS_HASH, 0
+        hash_actual, chain_seq = fila
+        return hash_actual, chain_seq
+
+    async def listar_todos_ordenados(self, chain_id: str | None = None) -> list[RegistroTrazabilidad]:
+        stmt = select(TraceabilityRecordModel)
+        if chain_id is not None:
+            stmt = stmt.where(TraceabilityRecordModel.chain_id == chain_id)
+            stmt = stmt.order_by(TraceabilityRecordModel.chain_seq.asc(), TraceabilityRecordModel.id.asc())
+        else:
+            # Orden global de inserción: mismo criterio de desempate que
+            # obtener_ultimo_eslabon(), en sentido inverso.
+            stmt = stmt.order_by(TraceabilityRecordModel.created_at.asc(), TraceabilityRecordModel.id.asc())
         result = await self._session.execute(stmt)
         return [_to_entity(m) for m in result.scalars().all()]
 
@@ -92,6 +92,7 @@ class SQLAlchemyTrazabilidadRepository(ITrazabilidadRepository):
         self,
         tipo_evento: str | None = None,
         device_id: str | None = None,
+        chain_id: str | None = None,
         desde: datetime | None = None,
         hasta: datetime | None = None,
         limite: int = 100,
@@ -102,6 +103,8 @@ class SQLAlchemyTrazabilidadRepository(ITrazabilidadRepository):
             stmt = stmt.where(TraceabilityRecordModel.tipo_evento == tipo_evento)
         if device_id:
             stmt = stmt.where(TraceabilityRecordModel.device_id == device_id)
+        if chain_id:
+            stmt = stmt.where(TraceabilityRecordModel.chain_id == chain_id)
         # Mismo motivo que en alertas: el reporte BPA debe ceñirse al periodo.
         # Se filtra por `timestamp` (el instante del hecho registrado), que es
         # el campo que el propio reporte muestra al auditor.

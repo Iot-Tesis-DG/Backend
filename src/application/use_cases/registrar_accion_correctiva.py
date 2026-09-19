@@ -66,9 +66,11 @@ class CorregirAccionCorrectivaUseCase:
     def __init__(
         self,
         accion_repository: IAccionCorrectivaRepository,
+        alerta_repository: IAlertaRepository,
         trazabilidad_repository: ITrazabilidadRepository,
     ) -> None:
         self._accion_repository = accion_repository
+        self._alerta_repository = alerta_repository
         self._registrar_hash = RegistrarHashEncadenadoUseCase(trazabilidad_repository)
 
     async def execute(
@@ -86,6 +88,11 @@ class CorregirAccionCorrectivaUseCase:
         )
         creada = await self._accion_repository.agregar(rectificacion)
 
+        # HU-25/HU-28: se encadena en la cadena DEL DISPOSITIVO de la alerta
+        # original — es lo que permite a un auditor reconstruir el ciclo
+        # completo de una alerta (reconocimiento, acción, rectificaciones)
+        # verificando una sola cadena por chain_id.
+        alerta = await self._alerta_repository.obtener_por_id(anterior.alert_id)
         await self._registrar_hash.execute(
             tipo_evento="ACCION_CORRECTIVA_RECTIFICADA",
             payload={
@@ -95,5 +102,6 @@ class CorregirAccionCorrectivaUseCase:
                 "corrige_accion_id": str(accion_anterior_id),
             },
             usuario_id=usuario_id,
+            device_id=alerta.device_id if alerta is not None else None,
         )
         return creada

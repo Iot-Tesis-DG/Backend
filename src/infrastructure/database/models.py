@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     Uuid,
     func,
 )
+from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -89,6 +91,13 @@ class DeviceModel(Base):
     )
     observaciones_instalacion: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # HU-53/HU-54: responsable registrado del dispositivo — destinatario real
+    # de las notificaciones de excursión crítica por correo/SMS, en vez de un
+    # único destinatario global fijo para todos los dispositivos.
+    responsable_nombre: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    responsable_email: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    responsable_telefono: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
     lecturas: Mapped[list["ThermalReadingModel"]] = relationship(back_populates="device")
 
 
@@ -134,7 +143,20 @@ class ThermalReadingModel(Base):
         # Deduplicación/idempotencia (RF-07): un reenvío MQTT (PUBACK perdido,
         # QoS1) para el mismo dispositivo y el mismo instante exacto no debe
         # producir un segundo registro. Ver hallazgo B-04 de la auditoría.
+        # Se conserva por compatibilidad con firmware que aún no envía
+        # boot_id/seq_no; el backlog nuevo (HU-11) exige la tripleta de abajo
+        # como clave de idempotencia real.
         UniqueConstraint("device_id", "timestamp", name="uq_thermal_readings_device_timestamp"),
+        # HU-11/HU-05: idempotencia real por identidad lógica de la lectura.
+        # Parcial (WHERE boot_id/seq_no no nulos) para no romper filas de
+        # firmware anterior que aún no declara estos campos.
+        Index(
+            "uq_thermal_readings_device_boot_seq",
+            "device_id", "boot_id", "seq_no",
+            unique=True,
+            sqlite_where=sa_text("boot_id IS NOT NULL AND seq_no IS NOT NULL"),
+            postgresql_where=sa_text("boot_id IS NOT NULL AND seq_no IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -162,6 +184,19 @@ class ThermalReadingModel(Base):
     # de dispositivos aún no actualizados) y versión del contrato de payload.
     reading_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     schema_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # HU-01/HU-11 (backlog 54 HU): identidad lógica real de la lectura.
+    # boot_id incrementa en cada arranque del ESP32 (persistido en NVS);
+    # seq_no es monótono dentro de ese boot. NULL en payloads de firmware
+    # anterior que aún no los declara (compatibilidad, igual que reading_id).
+    boot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    seq_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # HU-01: calidad de la sincronización temporal del dispositivo en el
+    # instante de captura ("synced"/"unsynced"). NULL en firmware anterior.
+    time_quality: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # HU-05: instante en que el backend RECIBIÓ el mensaje, distinto de
+    # `timestamp` (captured_at, el instante de captura declarado por el
+    # dispositivo). NULL en filas anteriores a esta columna.
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # HU-18/21/34: conceptos distintos de `nivel_riesgo` (model_class, arriba)
     # — ver docstring de LecturaTermica.calcular_riesgo_efectivo().
     excursion_confirmada: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -236,6 +271,11 @@ class CorrectiveActionModel(Base):
 
 class TraceabilityRecordModel(Base):
     __tablename__ = "traceability_records"
+    __table_args__ = (
+        # HU-25: chain_seq es una posición única DENTRO de su cadena, no
+        # global — dos cadenas distintas reutilizan la misma numeración.
+        UniqueConstraint("chain_id", "chain_seq", name="uq_traceability_chain_seq"),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     tipo_evento: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -249,6 +289,15 @@ class TraceabilityRecordModel(Base):
     # HU-47: aislamiento de un registro corrupto y marca de "posterior al punto de ruptura".
     is_corrupted: Mapped[bool] = mapped_column(Boolean, default=False)
     is_after_corruption: Mapped[bool] = mapped_column(Boolean, default=False)
+    # HU-25: cadena independiente por unidad monitoreada (ver
+    # registrar_hash_encadenado.CHAIN_ID_SISTEMA para eventos sin dispositivo)
+    # y posición del eslabón dentro de ella. hash_version distingue la
+    # fórmula de cálculo (1 = sin chain_id, anterior a esta migración; 2 =
+    # canonical({chain_id, previous_hash, timestamp, payload})) — los
+    # registros existentes NO se recalculan, ver hash_encadenado.py.
+    chain_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True, server_default="SISTEMA")
+    chain_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    hash_version: Mapped[int] = mapped_column(Integer, nullable=False, default=2, server_default="1")
 
 
 class AuditLogModel(Base):

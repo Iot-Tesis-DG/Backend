@@ -100,4 +100,6 @@ def trazabilidad_to_response(registro: RegistroTrazabilidad) -> TrazabilidadResp
         timestamp=registro.timestamp,
         previous_hash=registro.previous_hash,
         hash_actual=registro.hash_actual,
+        chain_id=registro.chain_id,
+        chain_seq=registro.chain_seq,
     )

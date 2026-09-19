@@ -4,26 +4,36 @@ from uuid import UUID
 
 from src.domain.entities.registro_trazabilidad import RegistroTrazabilidad
 from src.domain.repositories.i_trazabilidad_repository import ITrazabilidadRepository
-from src.domain.value_objects.hash_encadenado import HashEncadenado, timestamp_canonico
+from src.domain.value_objects.hash_encadenado import (
+    HASH_FORMULA_VERSION_ACTUAL,
+    HashEncadenado,
+    timestamp_canonico,
+)
 
+# HU-25: cadena independiente por unidad monitoreada. Un evento ligado a un
+# dispositivo (lectura, alerta, acción correctiva, evento de conectividad)
+# encadena bajo chain_id=device_id; un evento sin dispositivo (login, cambio
+# de rol, checklist, exportación, gobierno de modelo IA) encadena bajo esta
+# cadena de sistema — nunca se mezclan eventos de unidades monitoreadas
+# distintas entre sí (criterio de HU-25), y las cadenas de sistema y de
+# dispositivo tampoco se mezclan entre sí.
+CHAIN_ID_SISTEMA = "SISTEMA"
 
-# Estrategia de cadena: GLOBAL (una única cadena para todo el sistema, no
-# separada por dispositivo ni por farmacia). Decisión de diseño explícita,
-# coherente con el alcance de la tesis (un solo escenario de validación).
-#
 # Concurrencia: leer el último hash e insertar el siguiente eslabón es una
 # sección crítica de lectura-luego-escritura. Sin serializarla, dos escrituras
-# casi simultáneas pueden leer el mismo previous_hash y bifurcar la cadena
-# (hallazgo B-01 de la auditoría). Este backend es de un solo proceso por
-# diseño (mismo supuesto ya documentado en JtiStore y SlidingWindowRateLimiter),
-# así que un candado a nivel de proceso serializa correctamente todas las
-# escrituras de la cadena sin depender del dialecto de base de datos (Postgres
-# o SQLite en pruebas). En un despliegue multi-worker real, este candado NO
-# basta (cada worker tiene su propio proceso) y debe reforzarse con un bloqueo
-# a nivel de base de datos (p. ej. pg_advisory_xact_lock, ver
-# infrastructure/database/repositories/trazabilidad_repository.py) —
-# limitación conocida y documentada, igual que las demás estructuras en
-# memoria de este prototipo.
+# casi simultáneas de la MISMA cadena pueden leer el mismo previous_hash y
+# bifurcarla (hallazgo B-01 de la auditoría). Este backend es de un solo
+# proceso por diseño (mismo supuesto ya documentado en JtiStore y
+# SlidingWindowRateLimiter), así que un candado a nivel de proceso serializa
+# correctamente todas las escrituras sin depender del dialecto de base de
+# datos (Postgres o SQLite en pruebas). En un despliegue multi-worker real,
+# este candado NO basta (cada worker tiene su propio proceso) y se refuerza
+# con un bloqueo a nivel de base de datos derivado de chain_id (ver
+# obtener_ultimo_eslabon() en trazabilidad_repository.py) — limitación
+# conocida y documentada, igual que las demás estructuras en memoria de este
+# prototipo. El candado de proceso es único (no por chain_id): serializa algo
+# más de lo estrictamente necesario entre cadenas distintas, pero eso solo
+# afecta throughput, nunca corrección.
 class _CandadoDeProceso:
     """asyncio.Lock que se rebina automáticamente si cambia el event loop en
     ejecución. Un asyncio.Lock ordinario creado a nivel de módulo queda atado
@@ -74,22 +84,34 @@ class RegistrarHashEncadenadoUseCase:
         usuario_id: UUID | None = None,
         timestamp: datetime | None = None,
         previous_hash_forzado: str | None = None,
+        chain_id: str | None = None,
     ) -> RegistroTrazabilidad:
         """previous_hash_forzado (HU-47): permite anclar un evento de emergencia
-        al último bloque ÍNTEGRO conocido en vez de al último hash almacenado
-        (que puede ya ser descendiente de un registro corrupto)."""
+        al último bloque ÍNTEGRO conocido de la cadena (en vez de al último hash
+        almacenado, que puede ya ser descendiente de un registro corrupto).
+
+        chain_id (HU-25): cadena explícita del evento. Si se omite, se deriva
+        de device_id (una cadena por unidad monitoreada) o, si el evento no
+        está ligado a un dispositivo, de CHAIN_ID_SISTEMA."""
         timestamp = timestamp or datetime.now(tz=timezone.utc)
+        chain_id_efectivo = chain_id or device_id or CHAIN_ID_SISTEMA
 
         async def registrar() -> RegistroTrazabilidad:
-            previous_hash = previous_hash_forzado or await self._trazabilidad_repository.obtener_ultimo_hash()
+            ultimo_hash, ultimo_seq = await self._trazabilidad_repository.obtener_ultimo_eslabon(
+                chain_id_efectivo
+            )
+            previous_hash = previous_hash_forzado or ultimo_hash
             hash_encadenado = HashEncadenado.encadenar(
-                previous_hash, timestamp_canonico(timestamp), payload
+                chain_id_efectivo, previous_hash, timestamp_canonico(timestamp), payload
             )
             registro = RegistroTrazabilidad(
                 tipo_evento=tipo_evento,
                 payload=payload,
                 timestamp=timestamp,
                 hash_encadenado=hash_encadenado,
+                chain_id=chain_id_efectivo,
+                chain_seq=ultimo_seq + 1,
+                hash_version=HASH_FORMULA_VERSION_ACTUAL,
                 device_id=device_id,
                 usuario_id=usuario_id,
             )

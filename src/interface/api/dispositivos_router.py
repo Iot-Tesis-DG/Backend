@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from src.application.use_cases.auditar_accion_critica import AuditarAccionCriticaUseCase
 from src.application.use_cases.gestionar_dispositivos import (
+    ActualizarResponsableDispositivoUseCase,
     ActualizarUbicacionYMetadatosInstalacionUseCase,
     ConsultarEstadoCalibracionUseCase,
     ConsultarHistorialConfiguracionUseCase,
@@ -34,6 +35,7 @@ from src.interface.api.schemas import (
     DispositivoResponse,
     HistorialConfiguracionResponse,
     InstalacionDispositivoRequest,
+    ResponsableDispositivoRequest,
     RevocarCredencialRequest,
     RotarCredencialRequest,
 )
@@ -303,6 +305,43 @@ async def actualizar_instalacion(
         recurso=f"dispositivos/{device_id}/instalacion",
         detalle={"ubicacion": body.ubicacion},
         ip_origen=request.client.host if request.client else None,
+        device_id=device_id,
+    )
+    await session.commit()
+    return DispositivoResponse(**dispositivo)
+
+
+@router.patch("/{device_id}/responsable", response_model=DispositivoResponse)
+async def actualizar_responsable(
+    device_id: str,
+    body: ResponsableDispositivoRequest,
+    session: DbSessionDep,
+    request: Request,
+    admin=Depends(router_dep),
+) -> DispositivoResponse:
+    """HU-53/HU-54: destinatario de las notificaciones de excursión crítica
+    de este dispositivo por correo y SMS, en vez del destinatario único
+    global. Un cambio queda como evento histórico (HU-49)."""
+    repositorio = SQLAlchemyDeviceRepository(session)
+    use_case = ActualizarResponsableDispositivoUseCase(
+        repositorio, RegistrarHashEncadenadoUseCase(SQLAlchemyTrazabilidadRepository(session))
+    )
+    try:
+        dispositivo = await use_case.execute(
+            device_id, body.nombre, body.email, body.telefono, admin.id
+        )
+    except RecursoNoEncontradoError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    await AuditarAccionCriticaUseCase(
+        SQLAlchemyAuditLogRepository(session), SQLAlchemyTrazabilidadRepository(session)
+    ).execute(
+        usuario_id=admin.id,
+        accion="ACTUALIZAR_RESPONSABLE_DISPOSITIVO",
+        recurso=f"dispositivos/{device_id}/responsable",
+        detalle={"responsable_nombre": body.nombre},
+        ip_origen=request.client.host if request.client else None,
+        device_id=device_id,
     )
     await session.commit()
     return DispositivoResponse(**dispositivo)

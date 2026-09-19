@@ -33,7 +33,9 @@ async def test_metadata_del_modelo_reporta_metricas_rnf04(client, token_farmaceu
     assert metricas["rnf04"]["cumplido"] is True
     assert "accuracy" in metricas
     assert "confusion_matrix" in metricas
-    assert set(metricas["classes"]) == {"normal", "riesgo_preventivo", "excursion_critica"}
+    # HU-18 criterio 4: clasificador binario — excursion_critica nunca es una
+    # clase del modelo, viene solo de la regla determinista de rango.
+    assert set(metricas["classes"]) == {"normal", "riesgo_preventivo"}
     for clase in metricas["classes"]:
         reporte = metricas["classification_report"][clase]
         assert {"precision", "recall", "f1-score"} <= set(reporte)
@@ -54,7 +56,14 @@ async def test_clasificar_lectura_normal(client, token_farmaceutico):
     assert cuerpo["origen"] in ("random_forest", "salvaguarda_determinista")
 
 
-async def test_clasificar_excursion_critica(client, token_farmaceutico):
+async def test_clasificar_fuera_de_rango_prolongado_es_riesgo_preventivo_no_critica(
+    client, token_farmaceutico
+):
+    """HU-18 criterio 4: este endpoint solo ejecuta el pipeline de IA/regla
+    binaria — nunca produce excursion_critica, sin importar cuán severa sea
+    la entrada. excursion_critica es exclusiva de la regla determinista de
+    rango aplicada a la temperatura ACTUAL de una lectura real (HU-21), un
+    concepto distinto de esta clasificación preventiva por vector de features."""
     vector = {
         **VECTOR_NORMAL,
         "temperatura_interna": 14.5,
@@ -67,7 +76,7 @@ async def test_clasificar_excursion_critica(client, token_farmaceutico):
         "/api/ia/clasificar", json=vector, headers=auth_header(token_farmaceutico)
     )
     assert respuesta.status_code == 200
-    assert respuesta.json()["nivel_riesgo"] == "excursion_critica"
+    assert respuesta.json()["nivel_riesgo"] == "riesgo_preventivo"
 
 
 async def test_clasificar_denegado_para_tecnico(client, token_tecnico):

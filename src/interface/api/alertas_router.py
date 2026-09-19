@@ -3,7 +3,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from src.application.use_cases.auditar_accion_critica import AuditarAccionCriticaUseCase
-from src.application.use_cases.consultar_alertas import ConsultarAlertasUseCase, MarcarAlertaRevisadaUseCase
+from src.application.use_cases.consultar_alertas import (
+    ConsultarAccionesCorrectivasUseCase,
+    ConsultarAlertasUseCase,
+    MarcarAlertaRevisadaUseCase,
+)
 from src.application.use_cases.registrar_accion_correctiva import (
     CorregirAccionCorrectivaUseCase,
     RegistrarAccionCorrectivaUseCase,
@@ -76,9 +80,42 @@ async def revisar_alerta(
         recurso=f"alertas/{alerta_id}",
         detalle={"nivel_riesgo": alerta.nivel_riesgo.value},
         ip_origen=request.client.host if request.client else None,
+        device_id=alerta.device_id,
     )
     await session.commit()
     return alerta_to_response(alerta)
+
+
+@router.get(
+    "/{alerta_id}/acciones-correctivas",
+    response_model=list[AccionCorrectivaResponse],
+)
+async def listar_acciones_correctivas(
+    alerta_id: UUID,
+    session: DbSessionDep,
+    _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO, Rol.AUDITOR)),
+) -> list[AccionCorrectivaResponse]:
+    """HU-23 criterio 4: cronología de atención de una alerta (decisión,
+    acción, justificación, responsable y timestamp), incluidas las
+    rectificaciones (HU-28) — de solo lectura, sin permitir modificarla."""
+    use_case = ConsultarAccionesCorrectivasUseCase(
+        SQLAlchemyAlertaRepository(session), SQLAlchemyAccionCorrectivaRepository(session)
+    )
+    try:
+        acciones = await use_case.execute(alerta_id)
+    except RecursoNoEncontradoError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return [
+        AccionCorrectivaResponse(
+            id=a.id,
+            alert_id=a.alert_id,
+            usuario_id=a.usuario_id,
+            descripcion=a.descripcion,
+            created_at=a.created_at,
+            corrige_accion_id=a.corrige_accion_id,
+        )
+        for a in acciones
+    ]
 
 
 @router.post(
@@ -107,6 +144,10 @@ async def registrar_accion_correctiva(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     auditoria_repository = SQLAlchemyAuditLogRepository(session)
+    # La alerta ya cambió de estado (ATENDIDA) dentro del use case; se relee
+    # solo para obtener su device_id y encadenar este evento en la cadena de
+    # ESE dispositivo (HU-25/HU-28), no en la cadena de sistema.
+    alerta_para_auditoria = await alerta_repository.obtener_por_id(alerta_id)
     await AuditarAccionCriticaUseCase(
         auditoria_repository, trazabilidad_repository
     ).execute(
@@ -115,6 +156,7 @@ async def registrar_accion_correctiva(
         recurso=f"alertas/{alerta_id}/acciones-correctivas/{accion.id}",
         detalle={"descripcion": body.descripcion},
         ip_origen=request.client.host if request.client else None,
+        device_id=alerta_para_auditoria.device_id if alerta_para_auditoria else None,
     )
     await session.commit()
     return AccionCorrectivaResponse(
@@ -142,13 +184,15 @@ async def rectificar_accion_correctiva(
     """HU-28: corrige una justificación previamente registrada creando un
     nuevo evento que referencia a la anterior, sin sobrescribirla."""
     accion_repository = SQLAlchemyAccionCorrectivaRepository(session)
+    alerta_repository = SQLAlchemyAlertaRepository(session)
     trazabilidad_repository = SQLAlchemyTrazabilidadRepository(session)
-    use_case = CorregirAccionCorrectivaUseCase(accion_repository, trazabilidad_repository)
+    use_case = CorregirAccionCorrectivaUseCase(accion_repository, alerta_repository, trazabilidad_repository)
     try:
         accion = await use_case.execute(accion_id, usuario.id, body.descripcion)
     except RecursoNoEncontradoError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
+    alerta_para_auditoria = await alerta_repository.obtener_por_id(accion.alert_id)
     auditoria_repository = SQLAlchemyAuditLogRepository(session)
     await AuditarAccionCriticaUseCase(auditoria_repository, trazabilidad_repository).execute(
         usuario_id=usuario.id,
@@ -156,6 +200,7 @@ async def rectificar_accion_correctiva(
         recurso=f"alertas/acciones-correctivas/{accion_id}/rectificar",
         detalle={"descripcion": body.descripcion, "corrige_accion_id": str(accion_id)},
         ip_origen=request.client.host if request.client else None,
+        device_id=alerta_para_auditoria.device_id if alerta_para_auditoria else None,
     )
     await session.commit()
     return AccionCorrectivaResponse(

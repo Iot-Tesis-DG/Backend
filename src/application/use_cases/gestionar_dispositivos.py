@@ -330,6 +330,60 @@ class ActualizarUbicacionYMetadatosInstalacionUseCase:
         return actualizado
 
 
+class ActualizarResponsableDispositivoUseCase:
+    """HU-53/HU-54: registra quién recibe los avisos de excursión crítica de
+    este dispositivo por correo y SMS — reemplaza el destinatario único
+    global (SMTP_TO) por uno propio de cada unidad monitoreada."""
+
+    def __init__(
+        self, device_repository: IDeviceRepository, registrar_hash: RegistrarHashEncadenadoUseCase
+    ) -> None:
+        self._device_repository = device_repository
+        self._registrar_hash = registrar_hash
+
+    async def execute(
+        self,
+        device_id: str,
+        nombre: str | None,
+        email: str | None,
+        telefono: str | None,
+        actor_id: UUID,
+    ) -> dict:
+        anterior = await self._device_repository.obtener(device_id)
+        if anterior is None:
+            raise RecursoNoEncontradoError(f"Dispositivo {device_id} no encontrado")
+
+        actualizado = await self._device_repository.actualizar_responsable(
+            device_id, nombre, email, telefono
+        )
+        if anterior["responsable_email"] != email or anterior["responsable_telefono"] != telefono:
+            await self._device_repository.registrar_evento_config(
+                device_id,
+                campo="responsable_contacto",
+                valor_anterior=f"{anterior['responsable_email']} / {anterior['responsable_telefono']}",
+                valor_nuevo=f"{email} / {telefono}",
+                actor_id=actor_id,
+            )
+
+        await self._registrar_hash.execute(
+            tipo_evento="RESPONSABLE_DISPOSITIVO_ACTUALIZADO",
+            payload={
+                "device_id": device_id,
+                "responsable_nombre": nombre,
+                # El correo/teléfono del responsable SÍ queda en el payload:
+                # es el dato que la auditoría necesita para confirmar a quién
+                # se avisó ante una excursión, igual que el resto de metadatos
+                # de contacto operativo que ya viajan en claro en esta cadena.
+                "responsable_email": email,
+                "responsable_telefono": telefono,
+                "actor_id": str(actor_id),
+            },
+            device_id=device_id,
+            usuario_id=actor_id,
+        )
+        return actualizado
+
+
 class ConsultarHistorialConfiguracionUseCase:
     """HU-49: historial de cambios de configuración/instalación/calibración/
     reemplazo de un dispositivo, de solo lectura."""

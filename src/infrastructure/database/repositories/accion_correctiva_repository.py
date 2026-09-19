@@ -36,7 +36,13 @@ class SQLAlchemyAccionCorrectivaRepository(IAccionCorrectivaRepository):
         return _to_entity(model)
 
     async def listar_por_alerta(self, alert_id: UUID) -> list[AccionCorrectiva]:
-        stmt = select(CorrectiveActionModel).where(CorrectiveActionModel.alert_id == alert_id)
+        # HU-23 criterio 4: orden cronológico para reconstruir el ciclo de
+        # atención de la alerta (acción original + rectificaciones, HU-28).
+        stmt = (
+            select(CorrectiveActionModel)
+            .where(CorrectiveActionModel.alert_id == alert_id)
+            .order_by(CorrectiveActionModel.created_at.asc())
+        )
         result = await self._session.execute(stmt)
         return [_to_entity(m) for m in result.scalars().all()]
 

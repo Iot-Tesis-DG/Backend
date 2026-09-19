@@ -65,7 +65,9 @@ class _NotificadorEspia:
     def __init__(self) -> None:
         self.avisos: list[tuple[str, float | None]] = []
 
-    async def notificar_excursion_critica(self, device_id, temperatura, timestamp):
+    async def notificar_excursion_critica(
+        self, device_id, temperatura, timestamp, email_destino=None, telefono_destino=None
+    ):
         self.avisos.append((device_id, temperatura))
 
 

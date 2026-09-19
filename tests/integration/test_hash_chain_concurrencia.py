@@ -46,11 +46,16 @@ async def test_escrituras_concurrentes_no_bifurcan_la_cadena(db_session_factory)
     assert resultado.primer_registro_inconsistente is None
 
 
-async def test_escrituras_concurrentes_producen_cadena_estrictamente_lineal(db_session_factory):
-    """Verificación más fuerte que la anterior: cada previous_hash debe ser
-    exactamente el hash_actual del registro insertado inmediatamente antes
-    (mismo orden de created_at) — descarta bifurcaciones que por casualidad
-    aún pasaran la verificación agregada de integridad."""
+async def test_escrituras_concurrentes_producen_cadena_estrictamente_lineal_por_chain_id(
+    db_session_factory,
+):
+    """Verificación más fuerte que la anterior: dentro de CADA cadena (HU-25:
+    una por device_id — aquí FARM-0/1/2), cada previous_hash debe ser
+    exactamente el hash_actual del registro insertado inmediatamente antes en
+    esa misma cadena (orden de chain_seq) — descarta bifurcaciones que por
+    casualidad aún pasaran la verificación agregada de integridad. No se
+    espera linealidad GLOBAL entre cadenas distintas: son independientes por
+    diseño (no deben mezclar eventos de otras unidades monitoreadas)."""
     await asyncio.gather(
         *[_registrar_un_evento(db_session_factory, i) for i in range(N_ESCRITURAS_CONCURRENTES)]
     )
@@ -60,8 +65,16 @@ async def test_escrituras_concurrentes_producen_cadena_estrictamente_lineal(db_s
         registros = await repositorio.listar_todos_ordenados()
 
     assert len(registros) == N_ESCRITURAS_CONCURRENTES
-    for anterior, actual in pairwise(registros):
-        assert actual.previous_hash == anterior.hash_actual, (
-            "Cadena bifurcada: el previous_hash de un registro no coincide con el "
-            "hash_actual del registro inmediatamente anterior."
-        )
+    por_cadena: dict[str, list] = {}
+    for registro in registros:
+        por_cadena.setdefault(registro.chain_id, []).append(registro)
+
+    assert set(por_cadena) == {f"FARM-{i}" for i in range(3)}
+    for chain_id, registros_cadena in por_cadena.items():
+        registros_cadena.sort(key=lambda r: r.chain_seq)
+        for anterior, actual in pairwise(registros_cadena):
+            assert actual.chain_seq == anterior.chain_seq + 1, f"chain_seq no consecutivo en {chain_id}"
+            assert actual.previous_hash == anterior.hash_actual, (
+                f"Cadena {chain_id} bifurcada: el previous_hash de un registro no coincide con "
+                "el hash_actual del registro inmediatamente anterior de esa misma cadena."
+            )

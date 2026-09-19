@@ -46,6 +46,18 @@ class LecturaPayload(BaseModel):
     # que aún no lo envían); cuando está presente, registrar_lectura_termica
     # lo usa como clave de idempotencia además de (device_id, timestamp).
     reading_id: str | None = Field(default=None, max_length=100)
+    # HU-01/HU-11 (backlog 54 HU): identidad lógica real de la lectura para
+    # idempotencia — boot_id incrementa en cada arranque del ESP32, seq_no es
+    # monótono dentro de ese boot. Optativos por compatibilidad hacia atrás;
+    # cuando AMBOS están presentes, son la clave de idempotencia preferida
+    # sobre reading_id/(device_id, timestamp).
+    boot_id: int | None = Field(default=None, ge=0)
+    seq_no: int | None = Field(default=None, ge=0)
+    # HU-01: calidad de la sincronización temporal del dispositivo en el
+    # instante de captura. "synced" cuando hay NTP/RTC válido; "unsynced"
+    # cuando captured_at se estimó sin referencia externa confiable. Optativo
+    # por compatibilidad con firmware que aún no lo declara.
+    time_quality: Literal["synced", "unsynced"] | None = None
     # Acepta contrato interno y nombres de firmware/simulador. Se serializa
     # siempre con los nombres internos, así no rompe backend existente.
     message_id: str | None = Field(default=None, max_length=100)
@@ -137,6 +149,14 @@ class TipoEventoDispositivo(StrEnum):
     # reconectar (sin red no hay forma de avisar antes); `detalle` trae
     # cuántos intentos y cuánto duró el episodio.
     WIFI_RECONEXION_PROLONGADA = "wifi_reconexion_prolongada"
+    # HU-52 (backlog 54 HU): continuidad de medición ante corte de suministro
+    # eléctrico. CONMUTACION_RESPALDO: el nodo pasó a alimentarse del
+    # respaldo de 5V exclusivo para ESP32+sensores (no el refrigerador ni el
+    # router). RESPALDO_BAJO: el nivel de respaldo cayó bajo el umbral
+    # configurado — diagnóstico antes de un eventual apagado ordenado; la
+    # autonomía real se mide en el piloto, no se presupone aquí.
+    CONMUTACION_RESPALDO = "conmutacion_respaldo"
+    RESPALDO_BAJO = "respaldo_bajo"
 
 
 class EventoDispositivoPayload(BaseModel):

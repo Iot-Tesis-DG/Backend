@@ -35,7 +35,7 @@ class NotificacionService:
 
     @property
     def habilitado(self) -> bool:
-        return self._settings.smtp_enabled or self._settings.telegram_enabled
+        return self._settings.smtp_enabled or self._settings.telegram_enabled or self._settings.sms_enabled
 
     def _debe_notificar(self, device_id: str) -> bool:
         ahora = datetime.now(tz=timezone.utc)
@@ -47,23 +47,38 @@ class NotificacionService:
         return True
 
     async def notificar_excursion_critica(
-        self, device_id: str, temperatura: float | None, timestamp: str
+        self,
+        device_id: str,
+        temperatura: float | None,
+        timestamp: str,
+        email_destino: str | None = None,
+        telefono_destino: str | None = None,
     ) -> None:
+        """HU-53/HU-54: email_destino/telefono_destino son el responsable
+        REGISTRADO del dispositivo (devices.responsable_email/telefono). El
+        correo cae a SMTP_TO si el dispositivo no tiene uno propio (evita
+        dejar una excursión crítica sin avisar a nadie); el SMS, al ser un
+        canal explícitamente opcional (HU-54) y personal, NO tiene
+        equivalente global: sin número registrado, simplemente no se envía."""
         if not self.habilitado or not self._debe_notificar(device_id):
             return
 
         temp_texto = f"{temperatura:.1f} °C" if temperatura is not None else "sin dato de sensor"
         if self._settings.smtp_enabled:
-            await self._enviar_email(device_id, temp_texto, timestamp)
+            await self._enviar_email(device_id, temp_texto, timestamp, email_destino)
         if self._settings.telegram_enabled:
             await self._enviar_telegram(device_id, temp_texto, timestamp)
+        if self._settings.sms_enabled and telefono_destino:
+            await self._enviar_sms(device_id, temp_texto, timestamp, telefono_destino)
 
     # ── Canales ───────────────────────────────────────────────────────────
-    async def _enviar_email(self, device_id: str, temp_texto: str, timestamp: str) -> None:
+    async def _enviar_email(
+        self, device_id: str, temp_texto: str, timestamp: str, email_destino: str | None = None
+    ) -> None:
         mensaje = EmailMessage()
         mensaje["Subject"] = f"[ThermoTrace] EXCURSIÓN CRÍTICA — {device_id}"
         mensaje["From"] = self._settings.smtp_from
-        mensaje["To"] = self._settings.smtp_to
+        mensaje["To"] = email_destino or self._settings.smtp_to
         mensaje.set_content(
             "ALERTA CRÍTICA — Cadena de frío\n\n"
             f"Dispositivo: {device_id}\n"
@@ -110,3 +125,29 @@ class NotificacionService:
             logger.info("Aviso por Telegram enviado para %s", device_id)
         except Exception:
             logger.exception("No se pudo enviar el aviso por Telegram para %s", device_id)
+
+    async def _enviar_sms(
+        self, device_id: str, temp_texto: str, timestamp: str, telefono_destino: str
+    ) -> None:
+        """HU-54: pasarela compatible con la API REST de Twilio (Account SID
+        + Auth Token vía HTTP Basic, cuerpo form-encoded) — el proveedor
+        concreto es responsabilidad de configuración/despliegue (Settings),
+        no de este servicio. No declara envío exitoso salvo que el proveedor
+        confirme con 2xx (HU-54 criterio 2: "sin declarar entrega exitosa si
+        ningún proveedor la confirma")."""
+        texto = (
+            f"[ThermoTrace] EXCURSION CRITICA {device_id}: {temp_texto} a las {timestamp}. "
+            "Verifique el refrigerador de inmediato."
+        )
+        url = self._settings.sms_api_url.format(account_sid=self._settings.sms_account_sid)
+        try:
+            async with httpx.AsyncClient(timeout=10) as cliente:
+                respuesta = await cliente.post(
+                    url,
+                    auth=(self._settings.sms_account_sid, self._settings.sms_auth_token),
+                    data={"From": self._settings.sms_from, "To": telefono_destino, "Body": texto},
+                )
+                respuesta.raise_for_status()
+            logger.info("Aviso por SMS enviado para %s", device_id)
+        except Exception:
+            logger.exception("No se pudo enviar el aviso por SMS para %s", device_id)

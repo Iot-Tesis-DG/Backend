@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from src.application.use_cases.exportar_reporte_bpa import (
@@ -116,12 +116,17 @@ class ExportarReporteBPAPDFUseCase:
             fecha_desde.date().isoformat(), fecha_hasta.date().isoformat()
         )
 
-        resultado = await self._verificar_integridad.execute()
+        # HU-38 criterio 2: cuando el reporte es de un dispositivo concreto,
+        # la verificación se acota a SU cadena (HU-25) — un digest específico
+        # de esa unidad monitoreada, no del sistema completo.
+        resultado = await self._verificar_integridad.execute(chain_id=device_id)
         veredicto = {
             "integra": resultado.integra,
             "total_registros": resultado.total_registros,
             "primer_registro_inconsistente": resultado.primer_registro_inconsistente,
             "registros_posteriores_afectados": resultado.registros_posteriores_afectados,
+            "verificado_en": datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "digest_cadena": (resultado.hash_final or "")[:16] + "…" if resultado.hash_final else "N/A",
         }
 
         pdf_bytes = self._generador.generar(

@@ -13,6 +13,9 @@ from src.infrastructure.database.repositories.audit_log_repository import (
     SQLAlchemyAuditLogRepository,
 )
 from src.infrastructure.database.repositories.device_repository import SQLAlchemyDeviceRepository
+from src.infrastructure.database.repositories.trazabilidad_repository import (
+    SQLAlchemyTrazabilidadRepository,
+)
 from src.interface.api.sse_broadcaster import SSEBroadcaster
 from src.interface.main import _procesar_mensaje_mqtt
 
@@ -132,6 +135,43 @@ async def test_buffer_saturado_se_audita_con_periodo(sesion_con_device):
     entradas = [e for e in await _auditoria(sesion_con_device) if e["accion"] == "BUFFER_SATURADO"]
     assert len(entradas) == 1
     assert "periodo 2026-08-01T10:00:00Z" in entradas[0]["detalle"]["detalle"]
+
+
+@pytest.mark.asyncio
+async def test_conmutacion_respaldo_se_audita_y_encadena_en_el_dispositivo(sesion_con_device):
+    """HU-52 escenario 1: la conmutación a respaldo de 5V queda auditada y
+    trazada en la MISMA cadena que el resto de eventos del dispositivo
+    (HU-25) — no en la cadena de sistema."""
+    broadcaster = _BroadcasterEspia()
+    mensaje = _MensajeFalso(
+        f"farmacias/{DEVICE_ID}/eventos",
+        _evento("conmutacion_respaldo", detalle="Corte de suministro comercial detectado"),
+    )
+    await _procesar_mensaje_mqtt(mensaje, broadcaster)
+
+    assert [tipo for _, tipo in broadcaster.publicados] == ["conmutacion_respaldo"]
+    entradas = [e for e in await _auditoria(sesion_con_device) if e["accion"] == "CONMUTACION_RESPALDO"]
+    assert len(entradas) == 1
+
+    async with sesion_con_device() as session:
+        trazabilidad = await SQLAlchemyTrazabilidadRepository(session).listar(chain_id=DEVICE_ID)
+    assert any(r.tipo_evento == "AUDIT_LOG" for r in trazabilidad)
+
+
+@pytest.mark.asyncio
+async def test_respaldo_bajo_se_audita_como_diagnostico(sesion_con_device):
+    """HU-52 escenario 3: el nivel de respaldo bajo umbral es un diagnóstico
+    auditable, no una afirmación de que el nodo ya se apagó."""
+    broadcaster = _BroadcasterEspia()
+    mensaje = _MensajeFalso(
+        f"farmacias/{DEVICE_ID}/eventos",
+        _evento("respaldo_bajo", detalle="Nivel de respaldo bajo el umbral configurado"),
+    )
+    await _procesar_mensaje_mqtt(mensaje, broadcaster)
+
+    assert [tipo for _, tipo in broadcaster.publicados] == ["respaldo_bajo"]
+    entradas = [e for e in await _auditoria(sesion_con_device) if e["accion"] == "RESPALDO_BAJO"]
+    assert len(entradas) == 1
 
 
 @pytest.mark.asyncio

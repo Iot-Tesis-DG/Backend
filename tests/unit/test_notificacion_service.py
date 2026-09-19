@@ -31,12 +31,16 @@ class _ServicioEspia(NotificacionService):
         super().__init__(settings)
         self.emails: list[tuple[str, str]] = []
         self.telegrams: list[tuple[str, str]] = []
+        self.sms: list[tuple[str, str]] = []
 
-    async def _enviar_email(self, device_id, temp_texto, timestamp):
+    async def _enviar_email(self, device_id, temp_texto, timestamp, email_destino=None):
         self.emails.append((device_id, temp_texto))
 
     async def _enviar_telegram(self, device_id, temp_texto, timestamp):
         self.telegrams.append((device_id, temp_texto))
+
+    async def _enviar_sms(self, device_id, temp_texto, timestamp, telefono_destino):
+        self.sms.append((device_id, temp_texto))
 
 
 @pytest.mark.asyncio
@@ -149,3 +153,58 @@ def test_produccion_rechaza_telegram_habilitado_sin_credenciales():
             mqtt_enabled=False,
             telegram_enabled=True,
         )
+
+
+def test_produccion_rechaza_sms_habilitado_sin_credenciales():
+    with pytest.raises(ValueError, match="SMS_ENABLED requiere"):
+        Settings(
+            environment="production",
+            jwt_secret_key="x" * 40,
+            allowed_hosts=["thermotrace.example.org"],
+            cors_origins=["https://thermotrace.example.org"],
+            database_url="postgresql+asyncpg://u:p@db:5432/prod",
+            mqtt_enabled=False,
+            sms_enabled=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_sms_se_envia_al_responsable_registrado_del_dispositivo():
+    """HU-54: sin destinatario registrado, no hay a quién enviar — este canal
+    no tiene equivalente global como el correo (SMTP_TO)."""
+    servicio = _ServicioEspia(
+        _settings(sms_enabled=True, sms_account_sid="AC", sms_auth_token="tok", sms_from="+10000000000")
+    )
+    await servicio.notificar_excursion_critica(
+        "ESP32-01", 14.2, "2026-07-25T10:00:00+00:00", telefono_destino="+51999999999"
+    )
+    assert servicio.sms == [("ESP32-01", "14.2 °C")]
+
+
+@pytest.mark.asyncio
+async def test_sms_no_se_envia_sin_telefono_del_responsable():
+    servicio = _ServicioEspia(
+        _settings(sms_enabled=True, sms_account_sid="AC", sms_auth_token="tok", sms_from="+10000000000")
+    )
+    await servicio.notificar_excursion_critica("ESP32-01", 14.2, "2026-07-25T10:00:00+00:00")
+    assert servicio.sms == []
+
+
+@pytest.mark.asyncio
+async def test_email_usa_el_responsable_del_dispositivo_si_existe():
+    """HU-53: el correo se dirige al responsable REGISTRADO del dispositivo,
+    no al destinatario global, cuando el dispositivo tiene uno propio."""
+
+    class _ServicioQueRegistraDestinatario(NotificacionService):
+        def __init__(self, settings: Settings) -> None:
+            super().__init__(settings)
+            self.destinatarios: list[str] = []
+
+        def _smtp_enviar(self, mensaje) -> None:
+            self.destinatarios.append(mensaje["To"])
+
+    servicio = _ServicioQueRegistraDestinatario(_settings())
+    await servicio.notificar_excursion_critica(
+        "ESP32-01", 14.2, "2026-07-25T10:00:00+00:00", email_destino="responsable-farm@example.org"
+    )
+    assert servicio.destinatarios == ["responsable-farm@example.org"]

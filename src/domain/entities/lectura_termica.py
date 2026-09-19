@@ -55,6 +55,15 @@ class LecturaTermica:
     # payload con el que se construyó.
     reading_id: str | None = None
     schema_version: int | None = None
+    # HU-01/HU-11 (backlog 54 HU): identidad lógica real para idempotencia.
+    # None en payloads de firmware que aún no los declara (ver reading_id).
+    boot_id: int | None = None
+    seq_no: int | None = None
+    # HU-01: calidad de sincronización temporal en el instante de captura.
+    time_quality: str | None = None
+    # HU-05: instante en que el backend recibió el mensaje (distinto de
+    # `timestamp`=captured_at, el instante de captura declarado por el nodo).
+    received_at: datetime | None = None
     # HU-18/21/34: `nivel_riesgo` (arriba) sigue siendo la clase cruda que
     # produce el pipeline IA/salvaguarda (model_class). `excursion_confirmada`
     # y `riesgo_efectivo` son conceptos DISTINTOS y deliberadamente separados

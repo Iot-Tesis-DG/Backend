@@ -34,16 +34,19 @@ def test_temperatura_fuera_de_rango_breve_es_riesgo_preventivo():
     ) == NivelRiesgo.RIESGO_PREVENTIVO
 
 
-def test_temperatura_fuera_de_rango_prolongada_es_excursion_critica():
+def test_temperatura_fuera_de_rango_prolongada_es_riesgo_preventivo_no_excursion():
+    """HU-18 criterio 4: el modelo/regla de IA nunca produce excursion_critica
+    — esa clase es exclusiva de la regla determinista de rango aplicada
+    directamente sobre la temperatura actual, fuera de este pipeline."""
     assert clasificar_por_regla(
         _features(temperatura_interna=12.0, duracion_fuera_rango=45.0)
-    ) == NivelRiesgo.EXCURSION_CRITICA
+    ) == NivelRiesgo.RIESGO_PREVENTIVO
 
 
-def test_temperatura_muy_alejada_del_rango_es_excursion_critica_aunque_sea_breve():
+def test_temperatura_muy_alejada_del_rango_sigue_siendo_riesgo_preventivo():
     assert clasificar_por_regla(
         _features(temperatura_interna=20.0, duracion_fuera_rango=1.0)
-    ) == NivelRiesgo.EXCURSION_CRITICA
+    ) == NivelRiesgo.RIESGO_PREVENTIVO
 
 
 def test_tendencia_termica_fuerte_dentro_de_rango_es_riesgo_preventivo():

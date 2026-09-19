@@ -66,6 +66,11 @@ async def ingestar_lectura(
         temperatura_interna=body.temperatura_interna,
         apertura_refrigerador=body.apertura_refrigerador,
         estado_conectividad=body.estado_conectividad,
+        reading_id=body.reading_id,
+        schema_version=body.schema_version,
+        boot_id=body.boot_id,
+        seq_no=body.seq_no,
+        time_quality=body.time_quality,
         payload=evidencia_edge(
             firmware_version=body.firmware_version,
             duracion_apertura_segundos=body.duracion_apertura_segundos,

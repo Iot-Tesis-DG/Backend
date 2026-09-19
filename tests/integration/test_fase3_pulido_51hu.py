@@ -150,6 +150,46 @@ def test_actualizar_instalacion_registra_metadatos(client, token_admin):
     assert cuerpo["fecha_instalacion"] == "2026-08-01"
 
 
+# ── HU-53/HU-54: responsable del dispositivo (destinatario de avisos) ────
+
+
+def test_actualizar_responsable_persiste_contacto_y_queda_en_el_historial(client, token_admin):
+    client.post(
+        "/api/dispositivos",
+        json={"device_id": DEVICE_ID, "sensores_habilitados": ["ds18b20"]},
+        headers=auth_header(token_admin),
+    )
+
+    respuesta = client.patch(
+        f"/api/dispositivos/{DEVICE_ID}/responsable",
+        json={
+            "nombre": "Q.F. Ana Torres",
+            "email": "ana.torres@farmacia.example",
+            "telefono": "+51999111222",
+        },
+        headers=auth_header(token_admin),
+    )
+    assert respuesta.status_code == 200
+    cuerpo = respuesta.json()
+    assert cuerpo["responsable_nombre"] == "Q.F. Ana Torres"
+    assert cuerpo["responsable_email"] == "ana.torres@farmacia.example"
+    assert cuerpo["responsable_telefono"] == "+51999111222"
+
+    historial = client.get(
+        f"/api/dispositivos/{DEVICE_ID}/historial-configuracion", headers=auth_header(token_admin)
+    ).json()
+    assert any(h["campo"] == "responsable_contacto" for h in historial)
+
+
+def test_actualizar_responsable_de_dispositivo_inexistente_da_404(client, token_admin):
+    respuesta = client.patch(
+        "/api/dispositivos/NO-EXISTE/responsable",
+        json={"nombre": "X", "email": None, "telefono": None},
+        headers=auth_header(token_admin),
+    )
+    assert respuesta.status_code == 404
+
+
 def test_cambiar_ubicacion_dos_veces_genera_historial_sin_perder_la_anterior(client, token_admin):
     client.post(
         "/api/dispositivos",

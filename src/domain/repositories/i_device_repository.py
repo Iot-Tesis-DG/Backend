@@ -93,6 +93,16 @@ class IDeviceRepository(ABC):
         observaciones: str | None,
     ) -> dict: ...
 
+    # ── HU-53/HU-54: responsable registrado (destinatario de notificaciones) ─
+    @abstractmethod
+    async def actualizar_responsable(
+        self,
+        device_id: str,
+        nombre: str | None,
+        email: str | None,
+        telefono: str | None,
+    ) -> dict: ...
+
     # ── HU-49: historial auditable de configuración ────────────────────────
     @abstractmethod
     async def registrar_evento_config(

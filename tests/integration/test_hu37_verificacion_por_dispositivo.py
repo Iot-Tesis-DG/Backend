@@ -48,9 +48,11 @@ def test_endpoint_acepta_device_id_y_rango(client, token_tecnico):
 
 
 def test_solo_filtra_las_lecturas_del_dispositivo_consultado(client, token_tecnico):
-    """Otro dispositivo pudo intercalar eventos en la misma cadena global —
-    se verifican igual (no se saltan bloques intermedios) pero no aparecen
-    en la lista devuelta para este device_id."""
+    """HU-25: cada dispositivo tiene su propia cadena (chain_id=device_id) —
+    los eventos de OTRO_DEVICE_ID viven en una cadena distinta y no forman
+    parte de la cadena de DEVICE_ID en absoluto (a diferencia del diseño
+    anterior de cadena global, donde compartían la misma secuencia y solo se
+    filtraban al presentar el resultado)."""
     _ingestar(client, token_tecnico, DEVICE_ID, 10)
     _ingestar(client, token_tecnico, OTRO_DEVICE_ID, 8)
     _ingestar(client, token_tecnico, DEVICE_ID, 5)
@@ -64,12 +66,12 @@ def test_solo_filtra_las_lecturas_del_dispositivo_consultado(client, token_tecni
         headers=auth_header(token_tecnico),
     )
     cuerpo = respuesta.json()
-    assert all(True for _ in cuerpo["registros_del_dispositivo"])  # no revienta con datos mixtos
-    # Los 3 bloques (incluido el del otro dispositivo) se verificaron, pero
-    # solo 2 aparecen filtrados como pertenecientes a DEVICE_ID.
-    assert cuerpo["total_bloques_verificados"] >= 3
-    device_ids_devueltos = {r["id"] for r in cuerpo["registros_del_dispositivo"]}
-    assert len(device_ids_devueltos) == len(cuerpo["registros_del_dispositivo"])
+    # Solo los 2 bloques de la cadena de DEVICE_ID: el de OTRO_DEVICE_ID vive
+    # en su propia cadena y nunca la comparte.
+    assert cuerpo["total_bloques_verificados"] == 2
+    assert len(cuerpo["registros_del_dispositivo"]) == 2
+    ids_devueltos = {r["id"] for r in cuerpo["registros_del_dispositivo"]}
+    assert len(ids_devueltos) == len(cuerpo["registros_del_dispositivo"])
 
 
 def test_rango_invertido_se_rechaza(client, token_tecnico):

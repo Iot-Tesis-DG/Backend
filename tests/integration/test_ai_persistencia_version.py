@@ -40,7 +40,7 @@ async def test_lectura_persiste_confianza_y_version_del_modelo(client, token_tec
     assert body["nivel_riesgo"] == "normal"
     assert body["confianza_ia"] is not None
     assert 0.0 <= body["confianza_ia"] <= 1.0
-    assert body["modelo_version"] == "3.0.0-reproducible"
+    assert body["modelo_version"] == "4.0.0-binario"
     assert body["origen_clasificacion"] == "random_forest"
     assert body["estado_inferencia"] == "completada"
     assert body["motivo_no_inferencia"] is None

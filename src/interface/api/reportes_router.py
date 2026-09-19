@@ -87,6 +87,7 @@ async def exportar_reporte_bpa(
             "fecha_hasta": fecha_hasta.isoformat(),
         },
         ip_origen=request.client.host if request.client else None,
+        device_id=device_id,
     )
     await session.commit()
 
@@ -159,6 +160,7 @@ async def exportar_reporte_bpa_pdf(
             "bytes": len(pdf_bytes),
         },
         ip_origen=request.client.host if request.client else None,
+        device_id=device_id,
     )
     await session.commit()
 

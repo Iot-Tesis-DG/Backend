@@ -44,6 +44,7 @@ class RegistrarLecturaTermicaUseCase:
         self._generar_alerta = GenerarAlertaUseCase(
             alerta_repository,
             notificacion_service,
+            device_repository=device_repository,
             **(
                 {"ventana_normalizacion_minutos": ventana_normalizacion_alerta_minutos}
                 if ventana_normalizacion_alerta_minutos is not None
@@ -68,6 +69,13 @@ class RegistrarLecturaTermicaUseCase:
             await self._device_repository.obtener_o_crear(device_id)
 
     async def execute(self, lectura: LecturaTermica) -> LecturaTermica:
+        # HU-05: received_at es el instante en que EL BACKEND recibió el
+        # mensaje, distinto de `timestamp` (captured_at, declarado por el
+        # nodo). Se estampa aquí porque este use case es el único punto de
+        # entrada compartido por el consumidor MQTT y la ingesta REST.
+        if lectura.received_at is None:
+            lectura.received_at = datetime.now(tz=timezone.utc)
+
         await self._autorizar_dispositivo(lectura.device_id)
 
         # B-10: un instante implausible se rechaza ANTES de persistir. Aceptar
@@ -95,12 +103,19 @@ class RegistrarLecturaTermicaUseCase:
                 f"Lectura fuera de rango físico plausible para device {lectura.device_id}"
             )
 
-        # Deduplicación/idempotencia (corrige hallazgo B-04): un reenvío MQTT
-        # (PUBACK perdido, QoS1) para el mismo dispositivo y el mismo instante
-        # exacto no debe generar una lectura, alerta ni eslabón de hash duplicados.
-        existente = await self._lectura_repository.obtener_por_device_y_timestamp(
-            lectura.device_id, lectura.timestamp
-        )
+        # Deduplicación/idempotencia (corrige hallazgo B-04, HU-11): un reenvío
+        # MQTT (PUBACK perdido, QoS1) con la misma identidad lógica no debe
+        # generar una lectura, alerta ni eslabón de hash duplicados. Con
+        # boot_id+seq_no (firmware nuevo) esa es la clave real de idempotencia;
+        # sin ellos (firmware anterior) se conserva device_id+timestamp.
+        if lectura.boot_id is not None and lectura.seq_no is not None:
+            existente = await self._lectura_repository.obtener_por_device_boot_seq(
+                lectura.device_id, lectura.boot_id, lectura.seq_no
+            )
+        else:
+            existente = await self._lectura_repository.obtener_por_device_y_timestamp(
+                lectura.device_id, lectura.timestamp
+            )
         if existente is not None:
             return existente
 
@@ -153,6 +168,9 @@ class RegistrarLecturaTermicaUseCase:
                 # HU-05: identidad lógica de la lectura declarada por el
                 # firmware (None en dispositivos aún no actualizados).
                 "reading_id": lectura_guardada.reading_id,
+                "boot_id": lectura_guardada.boot_id,
+                "seq_no": lectura_guardada.seq_no,
+                "time_quality": lectura_guardada.time_quality,
                 # HU-18/21/34: model_class (arriba) vs. los dos conceptos
                 # distintos que exige el backlog — nunca se colapsan en uno.
                 "excursion_confirmada": lectura_guardada.excursion_confirmada,

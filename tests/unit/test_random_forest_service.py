@@ -30,7 +30,10 @@ def test_lectura_estable_clasifica_como_normal(servicio):
     assert servicio.predecir(features) == NivelRiesgo.NORMAL
 
 
-def test_excursion_prolongada_clasifica_como_critica(servicio):
+def test_excursion_prolongada_clasifica_como_riesgo_preventivo_no_critica(servicio):
+    """HU-18 criterio 4: el clasificador es binario (normal/riesgo_preventivo)
+    — excursion_critica nunca sale de este pipeline, viene solo de la regla
+    determinista de rango aplicada a la temperatura actual."""
     features = FeaturesRiesgoTermico(
         temperatura_ambiental=18.0,
         humedad_ambiental=60.0,
@@ -43,7 +46,7 @@ def test_excursion_prolongada_clasifica_como_critica(servicio):
         hora_evento=3,
         estado_conectividad_online=True,
     )
-    assert servicio.predecir(features) == NivelRiesgo.EXCURSION_CRITICA
+    assert servicio.predecir(features) == NivelRiesgo.RIESGO_PREVENTIVO
 
 
 def test_servicio_sin_modelo_entrenado_usa_regla_como_fallback(tmp_path):
@@ -110,21 +113,22 @@ def test_fallback_sin_modelo_reporta_origen_regla(tmp_path):
 
 
 class _ModeloQueSiempreDiceNormal:
-    """Doble de prueba: simula un falso negativo del bosque."""
+    """Doble de prueba: simula un falso negativo del bosque binario."""
 
-    classes_ = ["excursion_critica", "normal", "riesgo_preventivo"]
+    classes_ = ["normal", "riesgo_preventivo"]
 
     def predict_proba(self, _x):
         import numpy as np
 
-        return np.array([[0.01, 0.98, 0.01]])
+        return np.array([[0.98, 0.02]])
 
 
-def test_salvaguarda_impide_que_el_modelo_rebaje_una_excursion(tmp_path):
+def test_salvaguarda_impide_que_el_modelo_rebaje_un_riesgo_preventivo(tmp_path):
     servicio = RandomForestRiesgoService(model_path=tmp_path / "no_existe.pkl")
     servicio._modelo = _ModeloQueSiempreDiceNormal()
 
-    # 15 °C fuera de rango durante 90 min: la regla BPA exige excursión crítica.
+    # 15 °C fuera de rango durante 90 min: la regla de salvaguarda exige
+    # riesgo_preventivo aunque el modelo (falso negativo) diga normal.
     features = FeaturesRiesgoTermico(
         temperatura_ambiental=18.0,
         humedad_ambiental=60.0,
@@ -138,7 +142,7 @@ def test_salvaguarda_impide_que_el_modelo_rebaje_una_excursion(tmp_path):
         estado_conectividad_online=True,
     )
     resultado = servicio.inferir(features)
-    assert resultado.nivel == NivelRiesgo.EXCURSION_CRITICA
+    assert resultado.nivel == NivelRiesgo.RIESGO_PREVENTIVO
     assert resultado.origen == "salvaguarda_determinista"
     assert resultado.estado_inferencia == "completada"
 
@@ -149,7 +153,7 @@ def test_metadata_del_artefacto_v3_disponible(servicio):
     — ver audit-output/backend/ai-corrections/03_model_artifact_v3.md). v1 y
     v2 se conservan como evidencia histórica."""
     assert servicio.metadata is not None
-    assert servicio.metadata["model_version"] == "3.0.0-reproducible"
+    assert servicio.metadata["model_version"] == "4.0.0-binario"
     assert servicio.metadata["dataset_hash"], "El dataset_hash debe estar presente (RNF-04 auditable)"
     assert servicio.metadata["model_hash"], "El model_hash debe estar presente (RNF-04 auditable)"
     assert servicio.metadata["particion"], "La estrategia de partición debe quedar documentada"

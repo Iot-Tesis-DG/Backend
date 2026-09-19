@@ -39,12 +39,13 @@ async def listar_trazabilidad(
     _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO, Rol.AUDITOR)),
     tipo_evento: str | None = None,
     device_id: str | None = None,
+    chain_id: str | None = None,
     limite: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> list[TrazabilidadResponse]:
     repositorio = SQLAlchemyTrazabilidadRepository(session)
     registros = await repositorio.listar(
-        tipo_evento=tipo_evento, device_id=device_id, limite=limite, offset=offset
+        tipo_evento=tipo_evento, device_id=device_id, chain_id=chain_id, limite=limite, offset=offset
     )
     return [trazabilidad_to_response(r) for r in registros]
 
@@ -61,16 +62,20 @@ async def listar_trazabilidad(
 async def verificar_integridad(
     session: DbSessionDep,
     _usuario=Depends(require_roles(Rol.TECNICO, Rol.FARMACEUTICO, Rol.AUDITOR)),
+    chain_id: str | None = None,
 ) -> VerificacionIntegridadResponse:
-    """HU-26 + HU-47 Escenarios 1-2: si detecta corrupción, además notifica
-    (flag global, snapshot forense, evento de emergencia encadenado)."""
+    """HU-26 + HU-47 Escenarios 1-2: sin chain_id, verifica todas las cadenas
+    a la vez (vista de administrador); con chain_id, verifica solo la cadena
+    de esa unidad monitoreada (o "SISTEMA"), tal como exige el criterio de
+    aceptación. Si detecta corrupción, además notifica (flag global, snapshot
+    forense, evento de emergencia encadenado en la misma cadena afectada)."""
     repositorio = SQLAlchemyTrazabilidadRepository(session)
     use_case = VerificarIntegridadRegistroUseCase(
         repositorio,
         SQLAlchemyCorrupcionRepository(session),
         RegistrarHashEncadenadoUseCase(repositorio),
     )
-    resultado = await use_case.execute()
+    resultado = await use_case.execute(chain_id)
     await session.commit()
     detalle = None
     if resultado.detalle_inconsistencia is not None:
